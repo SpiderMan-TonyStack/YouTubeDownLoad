@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+release/
+*.log
+
+# 运行时下载的引擎二进制（应用首次运行会自动下载，不入库）
+resources/yt-dlp.exe
+resources/ffmpeg.exe
+resources/*.exe
+resources/*.json
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 本地项目记忆（不入库）
+.workbuddy/
+
+# 用户下载目录（如放在仓库内时）
+downloads/

@@ -1,0 +1,32 @@
+appId: com.youtubedownload.app
+productName: YouTube下载器
+copyright: Copyright © 2026 Winking
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - src/main/**/*
+  - src/preload.js
+  - package.json
+# 将 resources/ 下的 yt-dlp.exe / ffmpeg.exe 随包发布（可选，缺省时应用首次运行自动下载）
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - "**/*"
+win:
+  target:
+    - nsis
+    - portable
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: YouTube下载器
+portable:
+  artifactName: YouTube下载器-portable-${version}.exe
+electronDownload:
+  mirror: https://cdn.npmmirror.com/binaries/electron/

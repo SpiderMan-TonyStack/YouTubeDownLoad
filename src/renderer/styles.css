@@ -1,0 +1,104 @@
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #e3e6ea;
+  --text: #1f2329;
+  --muted: #8a9099;
+  --primary: #2f6fed;
+  --primary-d: #245ad0;
+  --green: #1faa6b;
+  --red: #e54848;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+#app {
+  height: 100vh;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  background: var(--primary);
+  color: #fff;
+  transition: background 0.15s;
+}
+button:hover {
+  background: var(--primary-d);
+}
+button:disabled {
+  background: #b9c4d6;
+  cursor: not-allowed;
+}
+button.ghost {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--border);
+}
+button.ghost:hover {
+  background: #eef3ff;
+}
+button.danger {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid #f3c4c4;
+}
+button.danger:hover {
+  background: #fdeeee;
+}
+
+input,
+select {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+}
+input:focus,
+select:focus {
+  border-color: var(--primary);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--muted);
+}
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.spread {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
