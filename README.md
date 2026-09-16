@@ -65,6 +65,11 @@ npm run dist:portable   # 单文件便携 exe -> release/
 ```
 > 打包使用 `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）规避 GitHub 443。
 
+### 免安装版（portable）使用
+- `npm run dist:portable` 产出 `release/YouTube下载器-portable-<version>.exe`：单文件、双击即用、**不写注册表、可放任意目录 / U 盘**。
+- 当前构建已将 `yt-dlp.exe` / `ffmpeg.exe` 一并打进包内 `resources/`，**离线即可下载**（无需首次联网拉取引擎）。
+- 暂用 Electron 默认图标，后续在 `build/icon.ico` 放多尺寸图标并在 `electron-builder.yml` 设 `win.icon` 即可替换。
+
 ## 引擎二进制说明
 
 应用启动时会按以下顺序查找 yt-dlp / ffmpeg：
