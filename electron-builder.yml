@@ -26,6 +26,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: YouTube下载器
+  artifactName: YouTube下载器-Setup-${version}.exe
 portable:
   artifactName: YouTube下载器-portable-${version}.exe
 electronDownload:

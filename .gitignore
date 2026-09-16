@@ -3,7 +3,7 @@ node_modules/
 
 # 构建产物
 dist/
-release/
+release*/
 *.log
 
 # 运行时下载的引擎二进制（应用首次运行会自动下载，不入库）

@@ -64,11 +64,21 @@ npm run dist            # NSIS 安装包 -> release/
 npm run dist:portable   # 单文件便携 exe -> release/
 ```
 > 打包使用 `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）规避 GitHub 443。
+>
+> **构建排障**：若 `release/` 下的 `win-unpacked/resources/app.asar` 被杀软 / 索引等系统进程占用，导致 `ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`（无法清空输出目录），可改用全新目录绕过，例如：
+> ```bash
+> npx electron-builder --win nsis --config.directories.output=release-nsis
+> ```
 
 ### 免安装版（portable）使用
 - `npm run dist:portable` 产出 `release/YouTube下载器-portable-<version>.exe`：单文件、双击即用、**不写注册表、可放任意目录 / U 盘**。
 - 当前构建已将 `yt-dlp.exe` / `ffmpeg.exe` 一并打进包内 `resources/`，**离线即可下载**（无需首次联网拉取引擎）。
 - 暂用 Electron 默认图标，后续在 `build/icon.ico` 放多尺寸图标并在 `electron-builder.yml` 设 `win.icon` 即可替换。
+
+### 可安装版（NSIS 安装包）使用
+- `npm run dist` 产出 `release/YouTube下载器-Setup-<version>.exe`（当前为 `YouTube下载器-Setup-1.0.0.exe`）：标准 Windows 安装包，安装到 `Program Files`、写注册表、创建开始菜单与桌面快捷方式。
+- 同样内置 yt-dlp / ffmpeg，安装后离线即可下载；安装目录可在安装时自定义。
+- 与免安装版区别：可安装版需安装（含卸载程序），适合长期使用；免安装版（portable）双击即用、可放 U 盘，适合随身 / 临时使用。
 
 ## 引擎二进制说明
 
@@ -97,7 +107,7 @@ npm run dist:portable   # 单文件便携 exe -> release/
 ## 更新日志
 
 ### v1.0.0（2026-09-16）
-首个正式版本，Windows 桌面端图形化 YouTube 下载器（MVP + 免安装便携版）。
+首个正式版本，Windows 桌面端图形化 YouTube 下载器（MVP + 免安装便携版 + NSIS 可安装版）。
 - 粘贴链接一键解析（标题 / 时长 / 可选格式与字幕）
 - 清晰度 / 格式选择：最高画质合并 mp4，或仅提取音频（m4a / mp3）
 - 字幕硬烧录：不需要 / 仅中文 / 仅英文 / 中英双字幕
@@ -105,3 +115,4 @@ npm run dist:portable   # 单文件便携 exe -> release/
 - 下载历史（打开目录 / 重新下载 / 删除）
 - 断点续传 + 失败重试，适应国内网络
 - **免安装版**：单文件便携 exe（双击即用、不写注册表、可放 U 盘），内置 yt-dlp / ffmpeg，离线即可下载
+- **可安装版**：NSIS 安装包（安装到 Program Files、创建开始菜单 / 桌面快捷方式、可自定义安装目录），同样内置引擎、离线可用
