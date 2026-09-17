@@ -281,6 +281,9 @@ onBeforeUnmount(() => {
 }
 .status.error {
   color: var(--red);
+  white-space: normal;
+  text-align: right;
+  max-width: 60%;
 }
 .bar {
   height: 8px;

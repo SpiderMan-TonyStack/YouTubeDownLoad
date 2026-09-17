@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   ensureBinaries: () => ipcRenderer.invoke('app:ensure-binaries'),
+  updateYtdlp: () => ipcRenderer.invoke('app:update-ytdlp'),
   parse: (url) => ipcRenderer.invoke('parse', { url }),
   download: (payload) => ipcRenderer.invoke('download', payload),
 

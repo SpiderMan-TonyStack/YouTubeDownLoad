@@ -63,6 +63,15 @@ async function ensure() {
     binsStatus.value = '失败：' + (e.message || e)
   }
 }
+async function updateYtdlp() {
+  binsStatus.value = '正在更新 yt-dlp…'
+  try {
+    await window.api.updateYtdlp()
+    binsStatus.value = 'yt-dlp 已更新到最新版本'
+  } catch (e) {
+    binsStatus.value = '更新失败：' + (e.message || e)
+  }
+}
 function openDownloads() {
   window.api.openFolder('')
 }
@@ -129,11 +138,15 @@ function openDownloads() {
       </div>
     </div>
     <div class="row">
-      <button @click="ensure">下载 / 更新引擎组件</button>
+      <button @click="ensure">检测 / 补齐引擎组件</button>
+      <button class="ghost" @click="updateYtdlp">更新 yt-dlp 引擎（最新）</button>
       <span v-if="binsStatus" class="muted">{{ binsStatus }}</span>
     </div>
     <p class="muted note">
       说明：首次运行会自动从官方源下载 yt-dlp 与 ffmpeg 到用户数据目录；如你的网络无法访问，可手动「选择」本地已有的 exe。
+    </p>
+    <p class="muted note">
+      提示：YouTube 经常改动，**yt-dlp 引擎过旧会导致下载报 403 失败**。若解析正常但下载失败，请点「更新 yt-dlp 引擎（最新）」把引擎升级到最新版后重试。
     </p>
   </div>
 </template>

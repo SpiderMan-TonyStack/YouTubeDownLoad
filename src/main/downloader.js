@@ -73,9 +73,11 @@ function parseProgressLine(line) {
 }
 
 // -------- 构建 yt-dlp 参数 --------
-function buildArgs({ url, options, template, proxy }) {
+function buildArgs({ url, options, template, proxy, ffmpegPath }) {
   const args = ['--newline', '--restrict-filenames', '--no-playlist', '-o', template + '.%(ext)s']
   if (proxy) args.push('--proxy', proxy)
+  // 明确告知 yt-dlp ffmpeg 位置，避免打包后因 PATH 中找不到 ffmpeg 导致合并/提取失败
+  if (ffmpegPath) args.push('--ffmpeg-location', path.dirname(ffmpegPath))
 
   if (options.mode === 'audio') {
     args.push('-f', 'bestaudio', '-x', '--audio-format', 'mp3')
@@ -103,12 +105,13 @@ function buildArgs({ url, options, template, proxy }) {
 function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
   const id = genId()
   const template = path.join(outDir, '%(title)s [%(id)s]')
-  const args = buildArgs({ url, options, template, proxy })
+  const args = buildArgs({ url, options, template, proxy, ffmpegPath })
 
   const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
   let lastDest = ''
   let mergedDest = ''
   const subPaths = []
+  let errOut = ''
 
   p.stdout.on('data', (d) => {
     const lines = d.toString().split(/\r?\n/)
@@ -129,7 +132,9 @@ function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onE
   })
 
   p.stderr.on('data', (d) => {
-    const lines = d.toString().split(/\r?\n/)
+    const text = d.toString()
+    errOut += text
+    const lines = text.split(/\r?\n/)
     for (const line of lines) {
       if (!line.trim()) continue
       const pr = parseProgressLine(line)
@@ -143,7 +148,9 @@ function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onE
 
   p.on('close', async (code) => {
     if (code !== 0) {
-      return onEvent({ type: 'error', id, message: '下载进程异常退出（可能网络超时或链接失效）' })
+      const reason = parseYtDlpError(errOut) || errOut.trim() || 'yt-dlp 退出码非 0'
+      const short = reason.length > 400 ? reason.slice(0, 400) + '…' : reason
+      return onEvent({ type: 'error', id, message: '下载失败：' + short })
     }
     const videoPath = mergedDest || lastDest
     if (!videoPath || !fs.existsSync(videoPath)) {

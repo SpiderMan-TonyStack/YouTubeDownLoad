@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { ensureBinaries } = require('./binaries')
+const { ensureBinaries, updateYtDlp } = require('./binaries')
 const { parseInfo, startDownload } = require('./downloader')
 const {
   getHistory,
@@ -84,6 +84,13 @@ ipcMain.handle('app:ensure-binaries', async () => {
   const settings = getSettings()
   const bins = await ensureBinaries(settings, (msg) => send('binaries-status', msg))
   return bins
+})
+
+// 把 yt-dlp 强制更新到最新版（YouTube 频繁变动，引擎过旧会导致 403 下载失败）
+ipcMain.handle('app:update-ytdlp', async () => {
+  const p = await updateYtDlp((msg) => send('binaries-status', msg))
+  send('binaries-status', 'yt-dlp 引擎已更新到最新版本')
+  return p
 })
 
 ipcMain.handle('parse', async (_e, { url }) => {

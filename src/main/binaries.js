@@ -73,10 +73,12 @@ const FFMPEG_ZIP = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials
 
 function locateYtDlp(settings) {
   if (settings && settings.ytdlpPath && exists(settings.ytdlpPath)) return settings.ytdlpPath
-  const res = path.join(process.resourcesPath || '', 'resources', 'yt-dlp.exe')
-  if (exists(res)) return res
+  // 优先用用户目录下「更新过」的版本（点设置里的「更新 yt-dlp 引擎」会下载到此处），其次才是随包内置版本。
+  // 这样内置引擎过期时，用户无需重装应用即可换上最新 yt-dlp。
   const bin = path.join(binDir(), 'yt-dlp.exe')
   if (exists(bin)) return bin
+  const res = path.join(process.resourcesPath || '', 'resources', 'yt-dlp.exe')
+  if (exists(res)) return res
   return null
 }
 
@@ -95,6 +97,20 @@ async function downloadYtDlp(dest, onProgress) {
   } catch (e) {
     await downloadFile(YTDLP_MIRROR, dest, onProgress)
   }
+}
+
+// 强制把 yt-dlp 更新到最新版，写入用户数据目录（优先级高于随包内置版本）
+async function updateYtDlp(onStatus) {
+  fs.mkdirSync(binDir(), { recursive: true })
+  const dest = path.join(binDir(), 'yt-dlp.exe')
+  const tmp = dest + '.new'
+  onStatus && onStatus('正在下载最新 yt-dlp…')
+  await downloadYtDlp(tmp, (r, t) =>
+    onStatus && onStatus(`正在下载最新 yt-dlp ${Math.round((r / t) * 100)}%`)
+  )
+  fs.copyFileSync(tmp, dest)
+  fs.unlinkSync(tmp)
+  return dest
 }
 
 function findFfmpegExe(root) {
@@ -164,5 +180,6 @@ module.exports = {
   downloadFile,
   locateYtDlp,
   locateFfmpeg,
-  ensureBinaries
+  ensureBinaries,
+  updateYtDlp
 }
