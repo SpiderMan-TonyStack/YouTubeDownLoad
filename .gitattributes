@@ -1,0 +1,2 @@
+# Git LFS：版本交付文件（安装包 / 便携版 exe）走 LFS，保持 git 历史轻量
+releases/**/*.exe filter=lfs diff=lfs merge=lfs -text
