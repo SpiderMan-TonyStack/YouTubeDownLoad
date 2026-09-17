@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { ensureBinaries, updateYtDlp } = require('./binaries')
 const { parseInfo, startDownload, retrySubtitles } = require('./downloader')
+const proxy = require('./proxy')
 const {
   getHistory,
   addHistory,
@@ -79,6 +80,14 @@ function send(channel, ...args) {
   if (win) win.webContents.send(channel, ...args)
 }
 
+// 只有「显式开启」时才把代理交给 yt-dlp；只影响本应用，从不修改系统代理
+function activeProxy(settings) {
+  if (settings.proxyEnabled === true) return settings.proxy || ''
+  if (settings.proxyEnabled === false) return ''
+  // 老版本升级上来的用户：未设置过开关，但有地址 → 沿用（视为开启）
+  return settings.proxy || ''
+}
+
 // ---------------- IPC ----------------
 ipcMain.handle('app:ensure-binaries', async () => {
   const settings = getSettings()
@@ -97,7 +106,7 @@ ipcMain.handle('parse', async (_e, { url }) => {
   if (!url || !/^https?:\/\//i.test(url)) throw new Error('请输入有效的视频链接')
   const settings = getSettings()
   const bins = await ensureBinaries(settings, (msg) => send('binaries-status', msg))
-  return parseInfo(url, bins.ytDlp)
+  return parseInfo(url, bins.ytDlp, activeProxy(settings))
 })
 
 ipcMain.handle('download', async (_e, { url, options }) => {
@@ -112,7 +121,7 @@ ipcMain.handle('download', async (_e, { url, options }) => {
     ffmpegPath: bins.ffmpeg,
     options: { ...options, duration: options.duration || 0 },
     outDir: dir,
-    proxy: settings.proxy,
+    proxy: activeProxy(settings),
     onEvent: (ev) => {
       ev.title = options.title
       send('download-event', ev)
@@ -135,7 +144,7 @@ ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
     ffmpegPath: bins.ffmpeg,
     options: { ...options, duration: options.duration || 0 },
     outDir: path.dirname(filePath),
-    proxy: settings.proxy,
+    proxy: activeProxy(settings),
     videoPath: filePath,
     onEvent: (ev) => {
       ev.title = options.title
@@ -143,6 +152,50 @@ ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
     }
   }).catch((e) => send('download-event', { type: 'error', id, message: '补字幕异常：' + e.message, title: options.title }))
   return true
+})
+
+// ---------------- 本地代理对接（复用本机已运行的 Clash / FlClash 内核） ----------------
+function controllerPortFrom(url) {
+  if (!url) return null
+  const m = String(url).match(/:(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
+ipcMain.handle('proxy:detect', async () => {
+  const s = getSettings()
+  const r = await proxy.detect({
+    secret: s.clashSecret || '',
+    controllerPort: controllerPortFrom(s.clashController)
+  })
+  const patch = { proxyPort: r.proxyPort || null }
+  // 探测到端口才覆盖地址；否则保留用户手填的值
+  if (r.proxyUrl) patch.proxy = r.proxyUrl
+  if (r.controller && !r.controller.needsSecret) patch.clashController = r.controller.url
+  saveSettings(patch)
+  return { ...r, settings: getSettings() }
+})
+
+ipcMain.handle('proxy:nodes', async (_e, { controllerUrl, secret }) => {
+  const s = getSettings()
+  return proxy.listNodes({
+    controllerUrl: controllerUrl || s.clashController,
+    secret: secret || s.clashSecret || ''
+  })
+})
+
+ipcMain.handle('proxy:select', async (_e, { controllerUrl, secret, group, node }) => {
+  const s = getSettings()
+  const url = controllerUrl || s.clashController
+  const sec = secret || s.clashSecret || ''
+  await proxy.selectNode({ controllerUrl: url, secret: sec, group, node })
+  saveSettings({ clashController: url, clashGroup: group, clashNode: node })
+  return true
+})
+
+ipcMain.handle('proxy:test', async (_e, { proxyUrl }) => {
+  const url = proxyUrl || getSettings().proxy || ''
+  if (!url) return { ok: false, error: '尚未配置代理地址' }
+  return proxy.testProxy(url)
 })
 
 ipcMain.handle('get-history', () => getHistory())

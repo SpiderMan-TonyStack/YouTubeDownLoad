@@ -9,7 +9,12 @@ const store = new Store({
       ffmpegPath: '',
       downloadDir: '',
       proxy: '',
-      useAutoCaptions: false,
+      proxyEnabled: false,
+      proxyPort: null,
+      clashController: '',
+      clashSecret: '',
+      clashGroup: '',
+      clashNode: '',
       theme: 'light'
     }
   }

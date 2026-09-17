@@ -8,9 +8,11 @@ function genId() {
 }
 
 // -------- 解析视频信息 --------
-function parseInfo(url, ytdlpPath) {
+function parseInfo(url, ytdlpPath, proxy) {
   return new Promise((resolve, reject) => {
-    const args = ['--dump-json', '--no-warnings', '--no-playlist', '--skip-download', url]
+    const args = ['--dump-json', '--no-warnings', '--no-playlist', '--skip-download']
+    if (proxy) args.push('--proxy', proxy)
+    args.push(url)
     const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
     let out = ''
     let err = ''

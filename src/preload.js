@@ -24,6 +24,12 @@ contextBridge.exposeInMainWorld('api', {
 
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (patch) => ipcRenderer.invoke('save-settings', patch),
+
+  proxyDetect: () => ipcRenderer.invoke('proxy:detect'),
+  proxyNodes: (payload) => ipcRenderer.invoke('proxy:nodes', payload || {}),
+  proxySelect: (payload) => ipcRenderer.invoke('proxy:select', payload),
+  proxyTest: (payload) => ipcRenderer.invoke('proxy:test', payload || {}),
+
   selectBinary: (type) => ipcRenderer.invoke('select-binary', type),
   selectDir: () => ipcRenderer.invoke('select-dir'),
   openFolder: (filePath) => ipcRenderer.invoke('open-folder', filePath)
