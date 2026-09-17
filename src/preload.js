@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   parse: (url) => ipcRenderer.invoke('parse', { url }),
   download: (payload) => ipcRenderer.invoke('download', payload),
   retrySubtitle: (payload) => ipcRenderer.invoke('retry-subtitle', payload),
+  cancelTask: (id) => ipcRenderer.invoke('cancel-task', { id }),
 
   onBinariesStatus: (cb) => {
     const l = (_e, msg) => cb(msg)

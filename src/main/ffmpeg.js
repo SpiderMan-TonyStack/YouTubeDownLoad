@@ -52,13 +52,15 @@ function cleanupWorkdirSubs(videoPath) {
 
 // 烧录字幕到新文件；返回 Promise<outPath>
 // onEvent(type, data): 'burn-status' {msg}, 'burn-progress' {percent}
-function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent }) {
+// registerProc(proc): 可选，把 ffmpeg 进程交出去，便于外部取消
+function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent, registerProc }) {
   return new Promise((resolve, reject) => {
     const work = copySubsToWorkdir(videoPath, subs)
     const vf = buildSubtitleFilter(work)
     const args = ['-y', '-i', videoPath, '-vf', vf, '-c:a', 'copy', '-preset', 'veryfast', outPath]
 
     const p = spawn(ffmpegPath, args, { shell: false, windowsHide: true })
+    if (registerProc) registerProc(p)
     let stderr = ''
     p.stderr.on('data', (d) => {
       const s = d.toString()

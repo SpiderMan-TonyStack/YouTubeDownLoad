@@ -124,6 +124,44 @@ function isSubtitleError(text) {
   return /Unable to download (?:video )?(?:subtitles|automatic captions)/i.test(text)
 }
 
+// -------- 运行中任务表（用于取消） --------
+const activeTasks = new Map()
+
+function taskEntry(id) {
+  let e = activeTasks.get(id)
+  if (!e) {
+    e = { ytdlp: null, ffmpeg: null, cancelled: false }
+    activeTasks.set(id, e)
+  }
+  return e
+}
+
+function wasCancelled(id) {
+  const e = activeTasks.get(id)
+  return !!(e && e.cancelled)
+}
+
+function finishCancelled(id, onEvent) {
+  activeTasks.delete(id)
+  onEvent({ type: 'cancelled', id })
+}
+
+// 取消某个任务：杀掉它正在跑的 yt-dlp / ffmpeg 子进程
+function cancel(id) {
+  const e = activeTasks.get(id)
+  if (!e) return false
+  e.cancelled = true
+  for (const key of ['ytdlp', 'ffmpeg']) {
+    const p = e[key]
+    if (p) {
+      try {
+        p.kill()
+      } catch (err) {}
+    }
+  }
+  return true
+}
+
 // 执行一次 yt-dlp，返回 { code, videoPath, subPaths, errOut }
 function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
   return new Promise((resolve, reject) => {
@@ -148,6 +186,8 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
     }
 
     const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
+    const entry = taskEntry(id)
+    entry.ytdlp = p
     p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
     p.stderr.on('data', (d) => {
       const text = d.toString()
@@ -157,6 +197,7 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
 
     p.on('error', (e) => reject(e))
     p.on('close', (code) => {
+      if (entry.ytdlp === p) entry.ytdlp = null
       resolve({ code, videoPath: mergedDest || lastDest, subPaths, errOut })
     })
   })
@@ -177,6 +218,7 @@ async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onE
 
     if (Object.keys(subs).length) {
       const burned = videoPath + '.burning.mp4'
+      let completed = false
       try {
         onEvent({ type: 'status', id, msg: '正在烧录字幕…' })
         await burnSubtitles({
@@ -187,19 +229,36 @@ async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onE
           duration: options.duration || 0,
           onEvent: (t, data) => {
             if (t === 'burn-progress') onEvent({ type: 'burn-progress', id, percent: data.percent })
+          },
+          registerProc: (proc) => {
+            const e = taskEntry(id)
+            e.ffmpeg = proc
+            proc.on('close', () => {
+              if (e.ffmpeg === proc) e.ffmpeg = null
+            })
           }
         })
+        completed = true
         fs.unlinkSync(videoPath)
         fs.renameSync(burned, videoPath)
       } catch (e) {
-        // 烧录失败不阻断：保留原视频并提示
-        onEvent({ type: 'status', id, msg: '字幕烧录失败，已保留无字幕版本：' + e.message })
+        // 清掉可能产生的半成品，避免留下垃圾文件
+        try {
+          if (fs.existsSync(burned)) fs.unlinkSync(burned)
+        } catch (err) {}
+        if (wasCancelled(id)) return finishCancelled(id, onEvent)
+        if (!completed) {
+          // 烧录失败不阻断：保留原视频并提示
+          onEvent({ type: 'status', id, msg: '字幕烧录失败，已保留无字幕版本：' + e.message })
+        }
       }
+      if (wasCancelled(id)) return finishCancelled(id, onEvent)
     } else {
       onEvent({ type: 'status', id, msg: '未找到对应字幕文件，已保留无字幕版本' })
     }
   }
 
+  activeTasks.delete(id)
   onEvent({
     type: 'complete',
     id,
@@ -219,6 +278,7 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     onEvent,
     id
   })
+  if (wasCancelled(id)) return finishCancelled(id, onEvent)
 
   // 若因字幕下载失败（典型 429），自动回退为无字幕下载，避免整单失败
   if ((first.code !== 0 || !first.videoPath || !fs.existsSync(first.videoPath)) && isSubtitleError(first.errOut)) {
@@ -238,6 +298,7 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
       onEvent,
       id
     })
+    if (wasCancelled(id)) return finishCancelled(id, onEvent)
 
     if (second.code !== 0) {
       const reason2 = parseYtDlpError(second.errOut) || second.errOut.trim() || 'yt-dlp 退出码非 0'
@@ -288,9 +349,11 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
     onEvent,
     id
   })
+  if (wasCancelled(id)) return finishCancelled(id, onEvent)
 
   if (isSubtitleError(r.errOut)) {
     const is429 = /429/.test(r.errOut)
+    activeTasks.delete(id)
     return onEvent({
       type: 'warn',
       id,
@@ -301,6 +364,7 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
     })
   }
   if (!r.subPaths.length) {
+    activeTasks.delete(id)
     return onEvent({ type: 'warn', id, msg: '未取到字幕文件，该视频可能没有所选中语言的字幕' })
   }
 
@@ -317,4 +381,4 @@ function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy,
   return taskId
 }
 
-module.exports = { parseInfo, startDownload, retrySubtitles, normalizeInfo }
+module.exports = { parseInfo, startDownload, retrySubtitles, cancel, normalizeInfo }

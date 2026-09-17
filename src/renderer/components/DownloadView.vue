@@ -116,9 +116,18 @@ function onEvent(ev) {
   } else if (ev.type === 'status') {
     t.message = ev.msg
   } else if (ev.type === 'warn') {
+    // 这一轮补字幕已经结束（多半是被限速），必须结束 retrying，
+    // 否则进度条会一直滚、状态永远停在「正在抓取字幕…」
+    t.retrying = false
     t.note = ev.msg
     t.noteKind = 'warn'
     t.retryable = ev.retryable !== false
+  } else if (ev.type === 'cancelled') {
+    t.retrying = false
+    t.status = 'done'
+    t.note = '已取消补字幕'
+    t.noteKind = 'warn'
+    t.retryable = true
   } else if (ev.type === 'complete') {
     t.status = 'done'
     t.percent = 100
@@ -161,6 +170,18 @@ async function retrySub(t) {
   } catch (e) {
     t.retrying = false
     t.note = '补字幕启动失败：' + (e.message || e)
+    t.noteKind = 'bad'
+  }
+}
+
+async function cancelSub(t) {
+  if (!t.retrying) return
+  t.note = '正在取消…'
+  t.noteKind = 'warn'
+  try {
+    await window.api.cancelTask(t.id)
+  } catch (e) {
+    t.note = '取消失败：' + (e.message || e)
     t.noteKind = 'bad'
   }
 }
@@ -260,13 +281,13 @@ onBeforeUnmount(() => {
         <div class="row task-actions">
           <button v-if="t.status === 'done'" class="ghost" @click="openFile(t)">打开文件</button>
           <button
-            v-if="t.retryable && t.status === 'done'"
+            v-if="t.retryable && t.status === 'done' && !t.retrying"
             class="ghost"
-            :disabled="t.retrying"
             @click="retrySub(t)"
           >
-            {{ t.retrying ? '补字幕中…' : '重试字幕' }}
+            重试字幕
           </button>
+          <button v-if="t.retrying" class="ghost" @click="cancelSub(t)">取消补字幕</button>
           <button class="danger" @click="removeTask(t)">移除</button>
         </div>
       </div>

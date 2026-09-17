@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { ensureBinaries, updateYtDlp } = require('./binaries')
-const { parseInfo, startDownload, retrySubtitles } = require('./downloader')
+const { parseInfo, startDownload, retrySubtitles, cancel } = require('./downloader')
 const proxy = require('./proxy')
 const {
   getHistory,
@@ -196,6 +196,12 @@ ipcMain.handle('proxy:test', async (_e, { proxyUrl }) => {
   const url = proxyUrl || getSettings().proxy || ''
   if (!url) return { ok: false, error: '尚未配置代理地址' }
   return proxy.testProxy(url)
+})
+
+// 取消任务：杀掉正在跑的 yt-dlp / ffmpeg（下载与补字幕通用）
+ipcMain.handle('cancel-task', (_e, { id }) => {
+  if (!id) return false
+  return cancel(id)
 })
 
 ipcMain.handle('get-history', () => getHistory())
