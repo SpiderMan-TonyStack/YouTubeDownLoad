@@ -60,7 +60,10 @@ function parseYtDlpError(err) {
 const PROGRESS_RE = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+([\d.]+)\s*(\w+)?(?:\s+at\s+([\d.]+)\s*(\w+\/s))?(?:\s+ETA\s+([\d:]+))?/
 const DEST_RE = /Destination:\s*(.+)/i
 const MERGE_RE = /Merging formats into "([^"]+)"/i
-const SUB_RE = /Writing video subtitles to:\s*(.+)/i
+// 兼容官方字幕与自动生成字幕两种文案：
+//   [info] Writing video subtitles to: xxx.srt
+//   [info] Writing video automatic captions to: xxx.srt
+const SUB_RE = /Writing (?:video )?(?:auto(?:matic)? )?(?:captions|subtitles) to:\s*(.+)/i
 
 function parseProgressLine(line) {
   const m = line.match(PROGRESS_RE)
@@ -90,8 +93,9 @@ function buildArgs({ url, options, template, proxy, ffmpegPath }) {
   }
 
   if (options.mode === 'video' && options.subtitle && options.subtitle !== 'none') {
-    args.push('--write-subs', '--sub-format', 'srt')
-    if (options.useAutoCaptions) args.push('--write-auto-subs')
+    // 同时尝试官方字幕与自动生成字幕（自动字幕作为兜底，避免"只有自动字幕"的视频拿不到字幕），
+    // 并统一转换成 srt，便于后续 ffmpeg 烧录。
+    args.push('--write-subs', '--write-auto-subs', '--sub-format', 'srt', '--convert-subs', 'srt')
     if (options.subtitle === 'zh') args.push('--sub-langs', 'zh-Hans,zh-CN,zh,zh-Hans-*')
     else if (options.subtitle === 'en') args.push('--sub-langs', 'en,en-*')
     else args.push('--sub-langs', 'zh-Hans,zh-CN,zh,en')
@@ -113,35 +117,28 @@ function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onE
   const subPaths = []
   let errOut = ''
 
-  p.stdout.on('data', (d) => {
-    const lines = d.toString().split(/\r?\n/)
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const pr = parseProgressLine(line)
-      if (pr) {
-        onEvent({ type: 'progress', id, ...pr, status: 'downloading' })
-        continue
-      }
-      const dest = line.match(DEST_RE)
-      if (dest) lastDest = dest[1].trim()
-      const mg = line.match(MERGE_RE)
-      if (mg) mergedDest = mg[1].trim()
-      const sb = line.match(SUB_RE)
-      if (sb) subPaths.push(sb[1].trim())
+  // 进度 / 产出路径 / 合并输出 / 字幕文件都从输出行解析；stdout 与 stderr 共用同一处理逻辑
+  const handleLine = (line) => {
+    if (!line.trim()) return
+    const pr = parseProgressLine(line)
+    if (pr) {
+      onEvent({ type: 'progress', id, ...pr, status: 'downloading' })
+      return
     }
-  })
+    const dest = line.match(DEST_RE)
+    if (dest) lastDest = dest[1].trim()
+    const mg = line.match(MERGE_RE)
+    if (mg) mergedDest = mg[1].trim()
+    const sb = line.match(SUB_RE)
+    if (sb) subPaths.push(sb[1].trim())
+  }
+
+  p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
 
   p.stderr.on('data', (d) => {
     const text = d.toString()
     errOut += text
-    const lines = text.split(/\r?\n/)
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const pr = parseProgressLine(line)
-      if (pr) {
-        onEvent({ type: 'progress', id, ...pr, status: 'downloading' })
-      }
-    }
+    text.split(/\r?\n/).forEach(handleLine)
   })
 
   p.on('error', (e) => onEvent({ type: 'error', id, message: e.message }))

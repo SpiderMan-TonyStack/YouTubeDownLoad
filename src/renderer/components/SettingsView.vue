@@ -4,7 +4,6 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 const settings = ref({
   downloadDir: '',
   proxy: '',
-  useAutoCaptions: false,
   ytdlpPath: '',
   ffmpegPath: '',
   theme: 'light'
@@ -50,9 +49,6 @@ async function pickBinary(type) {
 }
 async function onProxy() {
   await window.api.saveSettings({ proxy: settings.value.proxy })
-}
-async function onAutoCaptions() {
-  await window.api.saveSettings({ useAutoCaptions: settings.value.useAutoCaptions })
 }
 async function ensure() {
   binsStatus.value = '开始准备…'
@@ -116,10 +112,9 @@ function openDownloads() {
     </div>
 
     <div class="field">
-      <label class="check">
-        <input type="checkbox" v-model="settings.useAutoCaptions" @change="onAutoCaptions" />
-        允许下载 YouTube 自动生成字幕（无官方字幕时）
-      </label>
+      <div class="muted note" style="margin-top: 0">
+        字幕：下载视频时会同时尝试**官方字幕**与**自动生成字幕**（后者作为兜底），并烧录进画面；无需额外开关。
+      </div>
     </div>
 
     <h3>引擎（yt-dlp / ffmpeg）</h3>

@@ -59,9 +59,11 @@ const tabs = [
     </header>
 
     <main class="content">
-      <DownloadView v-if="tab === 'download'" />
-      <HistoryView v-else-if="tab === 'history'" />
-      <SettingsView v-else-if="tab === 'settings'" />
+      <!-- 下载页常驻（v-show）：切到别的页签不清空队列/解析结果，且下载中仍持续接收进度事件 -->
+      <DownloadView v-show="tab === 'download'" />
+      <!-- 历史页每次进入重新挂载，以拉取最新记录 -->
+      <HistoryView v-if="tab === 'history'" />
+      <SettingsView v-if="tab === 'settings'" />
     </main>
   </div>
 </template>
