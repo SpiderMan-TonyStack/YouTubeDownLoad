@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { ensureBinaries, updateYtDlp } = require('./binaries')
-const { parseInfo, startDownload } = require('./downloader')
+const { parseInfo, startDownload, retrySubtitles } = require('./downloader')
 const {
   getHistory,
   addHistory,
@@ -120,6 +120,29 @@ ipcMain.handle('download', async (_e, { url, options }) => {
     }
   })
   return id
+})
+
+// 补字幕：视频已下载完成但字幕当时被限速/失败，仅重抓字幕并烧录，不重下视频
+ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
+  if (!url || !/^https?:\/\//i.test(url)) throw new Error('缺少有效的视频链接')
+  if (!filePath || !fs.existsSync(filePath)) throw new Error('原视频文件不存在，无法补字幕')
+  const settings = getSettings()
+  const bins = await ensureBinaries(settings, (msg) => send('binaries-status', msg))
+  retrySubtitles({
+    id,
+    url,
+    ytdlpPath: bins.ytDlp,
+    ffmpegPath: bins.ffmpeg,
+    options: { ...options, duration: options.duration || 0 },
+    outDir: path.dirname(filePath),
+    proxy: settings.proxy,
+    videoPath: filePath,
+    onEvent: (ev) => {
+      ev.title = options.title
+      send('download-event', ev)
+    }
+  }).catch((e) => send('download-event', { type: 'error', id, message: '补字幕异常：' + e.message, title: options.title }))
+  return true
 })
 
 ipcMain.handle('get-history', () => getHistory())

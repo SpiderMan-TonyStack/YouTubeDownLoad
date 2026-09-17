@@ -54,6 +54,8 @@ async function onDownload() {
     tasks.unshift({
       id,
       title: options.title || url.value,
+      url: url.value.trim(),
+      options,
       percent: 0,
       speed: '',
       eta: '',
@@ -73,6 +75,11 @@ function fmtSize(b) {
 }
 
 function statusText(t) {
+  if (t.retrying) {
+    return t.status === 'burning'
+      ? `字幕烧录中 ${Math.round(t.percent || 0)}%`
+      : t.message || '补字幕中…'
+  }
   switch (t.status) {
     case 'starting':
       return t.message || '准备中…'
@@ -106,14 +113,43 @@ function onEvent(ev) {
   } else if (ev.type === 'status') {
     t.message = ev.msg
   } else if (ev.type === 'warn') {
-    t.warn = ev.msg
+    t.note = ev.msg
+    t.noteKind = 'warn'
+    t.retryable = ev.retryable !== false
   } else if (ev.type === 'complete') {
     t.status = 'done'
     t.percent = 100
     t.filePath = ev.filePath
+    t.retrying = false
+    if (ev.retried) {
+      t.note = '字幕已补上并烧录完成'
+      t.noteKind = 'ok'
+      t.retryable = false
+    }
   } else if (ev.type === 'error') {
     t.status = 'error'
     t.message = ev.message
+    t.retrying = false
+    if (t.retryable) t.note = ''
+  }
+}
+
+async function retrySub(t) {
+  if (!t.url || !t.filePath || t.retrying) return
+  t.retrying = true
+  t.note = '正在重新抓取字幕…'
+  t.noteKind = 'warn'
+  try {
+    await window.api.retrySubtitle({
+      id: t.id,
+      url: t.url,
+      options: t.options,
+      filePath: t.filePath
+    })
+  } catch (e) {
+    t.retrying = false
+    t.status = 'error'
+    t.message = e.message || '补字幕启动失败'
   }
 }
 
@@ -192,12 +228,20 @@ onBeforeUnmount(() => {
           <span class="task-title">{{ t.title }}</span>
           <span class="status" :class="t.status">{{ statusText(t) }}</span>
         </div>
-        <div v-if="t.warn" class="task-warn">{{ t.warn }}</div>
-        <div v-if="t.status === 'downloading' || t.status === 'burning'" class="bar">
+        <div v-if="t.note" class="task-note" :class="t.noteKind">{{ t.note }}</div>
+        <div v-if="t.status === 'downloading' || t.status === 'burning' || t.retrying" class="bar">
           <div class="fill" :style="{ width: (t.percent || 0) + '%' }"></div>
         </div>
         <div class="row task-actions">
           <button v-if="t.status === 'done'" class="ghost" @click="openFile(t)">打开文件</button>
+          <button
+            v-if="t.retryable && t.status === 'done'"
+            class="ghost"
+            :disabled="t.retrying"
+            @click="retrySub(t)"
+          >
+            {{ t.retrying ? '补字幕中…' : '重试字幕' }}
+          </button>
           <button class="danger" @click="removeTask(t)">移除</button>
         </div>
       </div>
@@ -294,12 +338,15 @@ onBeforeUnmount(() => {
   text-align: right;
   max-width: 60%;
 }
-.task-warn {
+.task-note {
   color: var(--warn-text);
   font-size: 12px;
   line-height: 1.5;
   margin-bottom: 8px;
   word-break: break-word;
+}
+.task-note.ok {
+  color: var(--ok-text);
 }
 .bar {
   height: 8px;

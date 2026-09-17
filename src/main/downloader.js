@@ -105,16 +105,25 @@ function buildArgs({ url, options, template, proxy, ffmpegPath }) {
   return args
 }
 
+// 仅抓取字幕（视频已存在时用于「补字幕」），沿用与下载相同的命名参数，保证字幕文件与视频同名
+function buildSubtitleOnlyArgs({ url, options, template, proxy }) {
+  const args = ['--newline', '--restrict-filenames', '--no-playlist', '--skip-download', '-o', template + '.%(ext)s']
+  if (proxy) args.push('--proxy', proxy)
+  args.push('--write-subs', '--write-auto-subs', '--sub-format', 'srt', '--convert-subs', 'srt')
+  if (options.subtitle === 'zh') args.push('--sub-langs', 'zh-Hans,zh-CN,zh,zh-Hans-*')
+  else if (options.subtitle === 'en') args.push('--sub-langs', 'en,en-*')
+  else args.push('--sub-langs', 'zh-Hans,zh-CN,zh,en')
+  args.push(url)
+  return args
+}
+
 function isSubtitleError(text) {
   // 字幕请求被 YouTube 限速/拒绝时，yt-dlp 会报 "Unable to download video subtitles"
   return /Unable to download (?:video )?(?:subtitles|automatic captions)/i.test(text)
 }
 
-// 执行一次 yt-dlp 下载，返回 { code, videoPath, subPaths, errOut }
-function runYtDlpOnce({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent, id }) {
-  const template = path.join(outDir, '%(title)s [%(id)s]')
-  const args = buildArgs({ url, options, template, proxy, ffmpegPath })
-
+// 执行一次 yt-dlp，返回 { code, videoPath, subPaths, errOut }
+function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
   return new Promise((resolve, reject) => {
     let lastDest = ''
     let mergedDest = ''
@@ -151,7 +160,7 @@ function runYtDlpOnce({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEv
   })
 }
 
-async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onEvent }) {
+async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onEvent, retried = false }) {
   // 字幕烧录
   if (options.subtitle && options.subtitle !== 'none' && subPaths.length) {
     const zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
@@ -189,25 +198,41 @@ async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onE
     }
   }
 
-  onEvent({ type: 'complete', id, filePath: videoPath, title: options.title || path.basename(videoPath) })
+  onEvent({
+    type: 'complete',
+    id,
+    filePath: videoPath,
+    title: options.title || path.basename(videoPath),
+    retried
+  })
 }
 
 async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+  const template = path.join(outDir, '%(title)s [%(id)s]')
+
   // 第一次：按用户选择尝试下载（含字幕）
-  const first = await runYtDlpOnce({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent, id })
+  const first = await runYtDlpOnce({
+    args: buildArgs({ url, options, template, proxy, ffmpegPath }),
+    ytdlpPath,
+    onEvent,
+    id
+  })
 
   // 若因字幕下载失败（典型 429），自动回退为无字幕下载，避免整单失败
   if ((first.code !== 0 || !first.videoPath || !fs.existsSync(first.videoPath)) && isSubtitleError(first.errOut)) {
-    const reason = parseYtDlpError(first.errOut) || '字幕下载失败'
-    onEvent({ type: 'warn', id, msg: '字幕下载受限（429），已回退为无字幕下载：' + reason })
+    const is429 = /429/.test(first.errOut)
+    onEvent({
+      type: 'warn',
+      id,
+      retryable: true,
+      msg: is429
+        ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
+        : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
+    })
 
     const second = await runYtDlpOnce({
-      url,
+      args: buildArgs({ url, options: { ...options, subtitle: 'none' }, template, proxy, ffmpegPath }),
       ytdlpPath,
-      ffmpegPath,
-      options: { ...options, subtitle: 'none' },
-      outDir,
-      proxy,
       onEvent,
       id
     })
@@ -220,7 +245,14 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     if (!second.videoPath || !fs.existsSync(second.videoPath)) {
       return onEvent({ type: 'error', id, message: '未找到下载产出文件' })
     }
-    return finalizeVideo({ id, videoPath: second.videoPath, subPaths: [], options: { ...options, subtitle: 'none' }, ffmpegPath, onEvent })
+    return finalizeVideo({
+      id,
+      videoPath: second.videoPath,
+      subPaths: [],
+      options: { ...options, subtitle: 'none' },
+      ffmpegPath,
+      onEvent
+    })
   }
 
   // 非字幕类失败，直接报错
@@ -237,14 +269,50 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
   return finalizeVideo({ id, videoPath: first.videoPath, subPaths: first.subPaths, options, ffmpegPath, onEvent })
 }
 
-// -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
-function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
-  const id = genId()
-  // 后台执行，立即返回 id，避免 IPC 阻塞
-  runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }).catch((e) => {
-    onEvent({ type: 'error', id, message: '下载异常：' + e.message })
+// -------- 补字幕：视频已下载完成，仅重新抓取字幕并烧录（不重下视频） --------
+async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, videoPath, onEvent }) {
+  if (!options.subtitle || options.subtitle === 'none') {
+    return onEvent({ type: 'warn', id, msg: '该任务未选择字幕' })
+  }
+  if (!videoPath || !fs.existsSync(videoPath)) {
+    return onEvent({ type: 'error', id, message: '原视频文件不存在，无法补字幕' })
+  }
+
+  const template = path.join(outDir, '%(title)s [%(id)s]')
+  onEvent({ type: 'status', id, msg: '正在重新抓取字幕…' })
+  const r = await runYtDlpOnce({
+    args: buildSubtitleOnlyArgs({ url, options, template, proxy }),
+    ytdlpPath,
+    onEvent,
+    id
   })
-  return id
+
+  if (isSubtitleError(r.errOut)) {
+    const is429 = /429/.test(r.errOut)
+    return onEvent({
+      type: 'warn',
+      id,
+      retryable: true,
+      msg: is429
+        ? '字幕仍被 YouTube 限速（HTTP 429）。请稍等几分钟再试，或在设置中配置代理更换 IP 后重试。'
+        : '字幕抓取失败：' + (parseYtDlpError(r.errOut) || '未知错误')
+    })
+  }
+  if (!r.subPaths.length) {
+    return onEvent({ type: 'warn', id, msg: '未取到字幕文件，该视频可能没有所选中语言的字幕' })
+  }
+
+  return finalizeVideo({ id, videoPath, subPaths: r.subPaths, options, ffmpegPath, onEvent, retried: true })
 }
 
-module.exports = { parseInfo, startDownload, normalizeInfo }
+// -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
+function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+  const taskId = id || genId()
+  // 后台执行，立即返回 id，避免 IPC 阻塞
+  runDownloadLoop({ id: taskId, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }).catch((e) => {
+    onEvent({ type: 'error', id: taskId, message: '下载异常：' + e.message })
+  })
+  return taskId
+}
+
+module.exports = { parseInfo, startDownload, retrySubtitles, normalizeInfo }

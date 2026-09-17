@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   updateYtdlp: () => ipcRenderer.invoke('app:update-ytdlp'),
   parse: (url) => ipcRenderer.invoke('parse', { url }),
   download: (payload) => ipcRenderer.invoke('download', payload),
+  retrySubtitle: (payload) => ipcRenderer.invoke('retry-subtitle', payload),
 
   onBinariesStatus: (cb) => {
     const l = (_e, msg) => cb(msg)
