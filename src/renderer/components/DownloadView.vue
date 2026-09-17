@@ -226,7 +226,7 @@ onBeforeUnmount(() => {
   height: 90px;
   object-fit: cover;
   border-radius: 8px;
-  background: #eee;
+  background: var(--track);
   flex-shrink: 0;
 }
 .info-main {

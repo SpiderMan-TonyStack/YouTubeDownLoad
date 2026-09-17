@@ -9,7 +9,8 @@ const store = new Store({
       ffmpegPath: '',
       downloadDir: '',
       proxy: '',
-      useAutoCaptions: false
+      useAutoCaptions: false,
+      theme: 'light'
     }
   }
 })

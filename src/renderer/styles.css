@@ -1,4 +1,10 @@
-:root {
+/* ===== 主题变量体系 =====
+   默认（:root）即「浅色」主题；其余主题通过 <html data-theme="xxx"> 覆盖。
+   主进程会把用户所选 theme 以 ?theme=xxx 形式传入，public/theme.js 在首屏渲染前
+   给 documentElement 打上 data-theme，避免主题切换闪烁。 */
+
+:root,
+[data-theme='light'] {
   --bg: #f5f6f8;
   --panel: #ffffff;
   --border: #e3e6ea;
@@ -6,13 +12,134 @@
   --muted: #8a9099;
   --primary: #2f6fed;
   --primary-d: #245ad0;
+  --primary-soft: #eef3ff;
   --green: #1faa6b;
   --red: #e54848;
+  --input-bg: #ffffff;
+  --track: #eef0f3;
+  --disabled-bg: #b9c4d6;
+  --disabled-text: #ffffff;
+  --ok-bg: #e7f7ef;
+  --ok-text: #1faa6b;
+  --warn-bg: #fff4e5;
+  --warn-text: #c77700;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='dark'] {
+  --bg: #15171c;
+  --panel: #1e2128;
+  --border: #2c3038;
+  --text: #e6e8eb;
+  --muted: #8b919b;
+  --primary: #4c8dff;
+  --primary-d: #3a78f0;
+  --primary-soft: #243049;
+  --green: #2fb87f;
+  --red: #ff6b6b;
+  --input-bg: #23272f;
+  --track: #2c313a;
+  --disabled-bg: #3a3f47;
+  --disabled-text: #8b919b;
+  --ok-bg: rgba(47, 184, 127, 0.15);
+  --ok-text: #2fb87f;
+  --warn-bg: rgba(199, 119, 0, 0.18);
+  --warn-text: #d9953a;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme='sepia'] {
+  --bg: #f3ecd9;
+  --panel: #fbf6ea;
+  --border: #e3d8bf;
+  --text: #4a4034;
+  --muted: #9a8e76;
+  --primary: #b5793a;
+  --primary-d: #9c652f;
+  --primary-soft: #f0e6d2;
+  --green: #6f8f3e;
+  --red: #c0473e;
+  --input-bg: #fffdf7;
+  --track: #ece2cc;
+  --disabled-bg: #d8cdb4;
+  --disabled-text: #fffdf7;
+  --ok-bg: #e7f0d8;
+  --ok-text: #5f7e30;
+  --warn-bg: #f6e7cf;
+  --warn-text: #a06a1f;
+  --shadow: 0 1px 3px rgba(80, 60, 30, 0.08);
+}
+
+[data-theme='blue'] {
+  --bg: #eaf1fb;
+  --panel: #ffffff;
+  --border: #cfe0f5;
+  --text: #14233b;
+  --muted: #6c82a0;
+  --primary: #1e6fe0;
+  --primary-d: #1759b8;
+  --primary-soft: #dde9fb;
+  --green: #1f9d7a;
+  --red: #e2475f;
+  --input-bg: #ffffff;
+  --track: #dde9fb;
+  --disabled-bg: #b6c8e0;
+  --disabled-text: #ffffff;
+  --ok-bg: #dcf3ec;
+  --ok-text: #16795d;
+  --warn-bg: #eaf1fb;
+  --warn-text: #1759b8;
+  --shadow: 0 1px 3px rgba(30, 80, 160, 0.08);
+}
+
+[data-theme='pink'] {
+  --bg: #fdeef3;
+  --panel: #fff6f9;
+  --border: #f6d3df;
+  --text: #4a2a35;
+  --muted: #b07a8a;
+  --primary: #e0568f;
+  --primary-d: #c43f78;
+  --primary-soft: #fbe0ec;
+  --green: #3a9d6e;
+  --red: #e54848;
+  --input-bg: #fffafc;
+  --track: #fbe0ec;
+  --disabled-bg: #e6c2d0;
+  --disabled-text: #ffffff;
+  --ok-bg: #e2f5ec;
+  --ok-text: #2f8a5f;
+  --warn-bg: #fde7ef;
+  --warn-text: #c43f78;
+  --shadow: 0 1px 3px rgba(200, 80, 140, 0.08);
+}
+
+[data-theme='green'] {
+  --bg: #eaf6ee;
+  --panel: #ffffff;
+  --border: #cfe8d6;
+  --text: #1d3a2a;
+  --muted: #6b9079;
+  --primary: #1f9d63;
+  --primary-d: #178049;
+  --primary-soft: #d9f0e2;
+  --green: #1f9d63;
+  --red: #e54848;
+  --input-bg: #ffffff;
+  --track: #d9f0e2;
+  --disabled-bg: #b6d6c1;
+  --disabled-text: #ffffff;
+  --ok-bg: #d9f0e2;
+  --ok-text: #178049;
+  --warn-bg: #eaf6ee;
+  --warn-text: #178049;
+  --shadow: 0 1px 3px rgba(30, 140, 80, 0.08);
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 html,
@@ -20,7 +147,7 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
@@ -45,7 +172,8 @@ button:hover {
   background: var(--primary-d);
 }
 button:disabled {
-  background: #b9c4d6;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
   cursor: not-allowed;
 }
 button.ghost {
@@ -54,7 +182,7 @@ button.ghost {
   border: 1px solid var(--border);
 }
 button.ghost:hover {
-  background: #eef3ff;
+  background: var(--primary-soft);
 }
 button.danger {
   background: transparent;
@@ -72,7 +200,7 @@ select {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
   outline: none;
 }

@@ -6,8 +6,25 @@ const settings = ref({
   proxy: '',
   useAutoCaptions: false,
   ytdlpPath: '',
-  ffmpegPath: ''
+  ffmpegPath: '',
+  theme: 'light'
 })
+
+// 主题预览色板：key 与 styles.css 的 [data-theme=xxx] 一一对应
+const THEMES = [
+  { key: 'light', label: '浅色', bg: '#f5f6f8', panel: '#ffffff', primary: '#2f6fed' },
+  { key: 'dark', label: '深色', bg: '#15171c', panel: '#1e2128', primary: '#4c8dff' },
+  { key: 'sepia', label: '护眼', bg: '#f3ecd9', panel: '#fbf6ea', primary: '#b5793a' },
+  { key: 'blue', label: '蓝调', bg: '#eaf1fb', panel: '#ffffff', primary: '#1e6fe0' },
+  { key: 'pink', label: '粉樱', bg: '#fdeef3', panel: '#fff6f9', primary: '#e0568f' },
+  { key: 'green', label: '薄荷', bg: '#eaf6ee', panel: '#ffffff', primary: '#1f9d63' }
+]
+
+function applyTheme(key) {
+  settings.value.theme = key
+  document.documentElement.setAttribute('data-theme', key)
+  window.api.saveSettings({ theme: key })
+}
 const binsStatus = ref('')
 const offBins = ref(null)
 
@@ -53,6 +70,27 @@ function openDownloads() {
 
 <template>
   <div class="settings card">
+    <h3>外观</h3>
+    <div class="field">
+      <div class="label">主题</div>
+      <div class="themes">
+        <button
+          v-for="th in THEMES"
+          :key="th.key"
+          :class="['theme-card', settings.theme === th.key ? 'active' : '']"
+          :title="th.label"
+          @click="applyTheme(th.key)"
+        >
+          <span class="swatch">
+            <i :style="{ background: th.bg }"></i>
+            <i :style="{ background: th.panel }"></i>
+            <i :style="{ background: th.primary }"></i>
+          </span>
+          <span class="tname">{{ th.label }}</span>
+        </button>
+      </div>
+    </div>
+
     <h3>下载设置</h3>
     <div class="field">
       <div class="label">下载目录</div>
@@ -131,5 +169,40 @@ h3 {
   font-size: 12px;
   line-height: 1.6;
   margin-top: 12px;
+}
+.themes {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  width: 84px;
+  color: var(--text);
+}
+.theme-card.active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+.swatch {
+  display: flex;
+  width: 100%;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.swatch i {
+  flex: 1;
+}
+.tname {
+  font-size: 12px;
 }
 </style>

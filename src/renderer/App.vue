@@ -10,6 +10,11 @@ const binsReady = ref(false)
 let offBins = null
 
 onMounted(async () => {
+  // 兜底：确保主题与设置一致（主进程已通过 ?theme 预置，这里防止任何路径下遗漏）
+  try {
+    const s = await window.api.getSettings()
+    if (s && s.theme) document.documentElement.setAttribute('data-theme', s.theme)
+  } catch (e) {}
   offBins = window.api.onBinariesStatus((msg) => {
     binsStatus.value = msg
   })

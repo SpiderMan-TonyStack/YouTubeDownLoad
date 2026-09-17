@@ -27,7 +27,9 @@ function createWindow() {
       nodeIntegration: false
     }
   })
-  win.loadFile(path.join(__dirname, '..', '..', 'dist', 'index.html'))
+  win.loadFile(path.join(__dirname, '..', '..', 'dist', 'index.html'), {
+    query: { theme: (getSettings().theme || 'light') }
+  })
   // 开发时取消下一行注释可打开调试工具
   // win.webContents.openDevTools()
 }
