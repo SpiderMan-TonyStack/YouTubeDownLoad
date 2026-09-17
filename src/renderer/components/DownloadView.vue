@@ -105,6 +105,8 @@ function onEvent(ev) {
     t.percent = ev.percent
   } else if (ev.type === 'status') {
     t.message = ev.msg
+  } else if (ev.type === 'warn') {
+    t.warn = ev.msg
   } else if (ev.type === 'complete') {
     t.status = 'done'
     t.percent = 100
@@ -190,6 +192,7 @@ onBeforeUnmount(() => {
           <span class="task-title">{{ t.title }}</span>
           <span class="status" :class="t.status">{{ statusText(t) }}</span>
         </div>
+        <div v-if="t.warn" class="task-warn">{{ t.warn }}</div>
         <div v-if="t.status === 'downloading' || t.status === 'burning'" class="bar">
           <div class="fill" :style="{ width: (t.percent || 0) + '%' }"></div>
         </div>
@@ -284,6 +287,19 @@ onBeforeUnmount(() => {
   white-space: normal;
   text-align: right;
   max-width: 60%;
+}
+.status.warn {
+  color: var(--warn-text);
+  white-space: normal;
+  text-align: right;
+  max-width: 60%;
+}
+.task-warn {
+  color: var(--warn-text);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  word-break: break-word;
 }
 .bar {
   height: 8px;

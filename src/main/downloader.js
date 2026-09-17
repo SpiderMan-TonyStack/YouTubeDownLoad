@@ -105,96 +105,145 @@ function buildArgs({ url, options, template, proxy, ffmpegPath }) {
   return args
 }
 
-// -------- 启动一次下载（含字幕烧录编排） --------
-function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
-  const id = genId()
+function isSubtitleError(text) {
+  // 字幕请求被 YouTube 限速/拒绝时，yt-dlp 会报 "Unable to download video subtitles"
+  return /Unable to download (?:video )?(?:subtitles|automatic captions)/i.test(text)
+}
+
+// 执行一次 yt-dlp 下载，返回 { code, videoPath, subPaths, errOut }
+function runYtDlpOnce({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent, id }) {
   const template = path.join(outDir, '%(title)s [%(id)s]')
   const args = buildArgs({ url, options, template, proxy, ffmpegPath })
 
-  const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
-  let lastDest = ''
-  let mergedDest = ''
-  const subPaths = []
-  let errOut = ''
+  return new Promise((resolve, reject) => {
+    let lastDest = ''
+    let mergedDest = ''
+    const subPaths = []
+    let errOut = ''
 
-  // 进度 / 产出路径 / 合并输出 / 字幕文件都从输出行解析；stdout 与 stderr 共用同一处理逻辑
-  const handleLine = (line) => {
-    if (!line.trim()) return
-    const pr = parseProgressLine(line)
-    if (pr) {
-      onEvent({ type: 'progress', id, ...pr, status: 'downloading' })
-      return
+    const handleLine = (line) => {
+      if (!line.trim()) return
+      const pr = parseProgressLine(line)
+      if (pr) {
+        onEvent({ type: 'progress', id, ...pr, status: 'downloading' })
+        return
+      }
+      const dest = line.match(DEST_RE)
+      if (dest) lastDest = dest[1].trim()
+      const mg = line.match(MERGE_RE)
+      if (mg) mergedDest = mg[1].trim()
+      const sb = line.match(SUB_RE)
+      if (sb) subPaths.push(sb[1].trim())
     }
-    const dest = line.match(DEST_RE)
-    if (dest) lastDest = dest[1].trim()
-    const mg = line.match(MERGE_RE)
-    if (mg) mergedDest = mg[1].trim()
-    const sb = line.match(SUB_RE)
-    if (sb) subPaths.push(sb[1].trim())
+
+    const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
+    p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
+    p.stderr.on('data', (d) => {
+      const text = d.toString()
+      errOut += text
+      text.split(/\r?\n/).forEach(handleLine)
+    })
+
+    p.on('error', (e) => reject(e))
+    p.on('close', (code) => {
+      resolve({ code, videoPath: mergedDest || lastDest, subPaths, errOut })
+    })
+  })
+}
+
+async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onEvent }) {
+  // 字幕烧录
+  if (options.subtitle && options.subtitle !== 'none' && subPaths.length) {
+    const zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
+    const enSub = subPaths.find((s) => /en/i.test(path.basename(s)) && !/zh/i.test(path.basename(s)))
+    const subs = {}
+    if (options.subtitle === 'zh' && zhSub) subs.zh = zhSub
+    else if (options.subtitle === 'en' && enSub) subs.en = enSub
+    else {
+      if (zhSub) subs.zh = zhSub
+      if (enSub) subs.en = enSub
+    }
+
+    if (Object.keys(subs).length) {
+      const burned = videoPath + '.burning.mp4'
+      try {
+        onEvent({ type: 'status', id, msg: '正在烧录字幕…' })
+        await burnSubtitles({
+          ffmpegPath,
+          videoPath,
+          subs,
+          outPath: burned,
+          duration: options.duration || 0,
+          onEvent: (t, data) => {
+            if (t === 'burn-progress') onEvent({ type: 'burn-progress', id, percent: data.percent })
+          }
+        })
+        fs.unlinkSync(videoPath)
+        fs.renameSync(burned, videoPath)
+      } catch (e) {
+        // 烧录失败不阻断：保留原视频并提示
+        onEvent({ type: 'status', id, msg: '字幕烧录失败，已保留无字幕版本：' + e.message })
+      }
+    } else {
+      onEvent({ type: 'status', id, msg: '未找到对应字幕文件，已保留无字幕版本' })
+    }
   }
 
-  p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
+  onEvent({ type: 'complete', id, filePath: videoPath, title: options.title || path.basename(videoPath) })
+}
 
-  p.stderr.on('data', (d) => {
-    const text = d.toString()
-    errOut += text
-    text.split(/\r?\n/).forEach(handleLine)
-  })
+async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+  // 第一次：按用户选择尝试下载（含字幕）
+  const first = await runYtDlpOnce({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent, id })
 
-  p.on('error', (e) => onEvent({ type: 'error', id, message: e.message }))
+  // 若因字幕下载失败（典型 429），自动回退为无字幕下载，避免整单失败
+  if ((first.code !== 0 || !first.videoPath || !fs.existsSync(first.videoPath)) && isSubtitleError(first.errOut)) {
+    const reason = parseYtDlpError(first.errOut) || '字幕下载失败'
+    onEvent({ type: 'warn', id, msg: '字幕下载受限（429），已回退为无字幕下载：' + reason })
 
-  p.on('close', async (code) => {
-    if (code !== 0) {
-      const reason = parseYtDlpError(errOut) || errOut.trim() || 'yt-dlp 退出码非 0'
-      const short = reason.length > 400 ? reason.slice(0, 400) + '…' : reason
+    const second = await runYtDlpOnce({
+      url,
+      ytdlpPath,
+      ffmpegPath,
+      options: { ...options, subtitle: 'none' },
+      outDir,
+      proxy,
+      onEvent,
+      id
+    })
+
+    if (second.code !== 0) {
+      const reason2 = parseYtDlpError(second.errOut) || second.errOut.trim() || 'yt-dlp 退出码非 0'
+      const short = reason2.length > 400 ? reason2.slice(0, 400) + '…' : reason2
       return onEvent({ type: 'error', id, message: '下载失败：' + short })
     }
-    const videoPath = mergedDest || lastDest
-    if (!videoPath || !fs.existsSync(videoPath)) {
+    if (!second.videoPath || !fs.existsSync(second.videoPath)) {
       return onEvent({ type: 'error', id, message: '未找到下载产出文件' })
     }
+    return finalizeVideo({ id, videoPath: second.videoPath, subPaths: [], options: { ...options, subtitle: 'none' }, ffmpegPath, onEvent })
+  }
 
-    // 字幕烧录
-    if (options.subtitle && options.subtitle !== 'none' && subPaths.length) {
-      const base = path.basename(videoPath)
-      const zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
-      const enSub = subPaths.find((s) => /en/i.test(path.basename(s)) && !/zh/i.test(path.basename(s)))
-      const subs = {}
-      if (options.subtitle === 'zh' && zhSub) subs.zh = zhSub
-      else if (options.subtitle === 'en' && enSub) subs.en = enSub
-      else {
-        if (zhSub) subs.zh = zhSub
-        if (enSub) subs.en = enSub
-      }
+  // 非字幕类失败，直接报错
+  if (first.code !== 0) {
+    const reason = parseYtDlpError(first.errOut) || first.errOut.trim() || 'yt-dlp 退出码非 0'
+    const short = reason.length > 400 ? reason.slice(0, 400) + '…' : reason
+    return onEvent({ type: 'error', id, message: '下载失败：' + short })
+  }
 
-      if (Object.keys(subs).length) {
-        const burned = videoPath + '.burning.mp4'
-        try {
-          onEvent({ type: 'status', id, msg: '正在烧录字幕…' })
-          await burnSubtitles({
-            ffmpegPath,
-            videoPath,
-            subs,
-            outPath: burned,
-            duration: options.duration || 0,
-            onEvent: (t, data) => {
-              if (t === 'burn-progress') onEvent({ type: 'burn-progress', id, percent: data.percent })
-            }
-          })
-          fs.unlinkSync(videoPath)
-          fs.renameSync(burned, videoPath)
-        } catch (e) {
-          // 烧录失败不阻断：保留原视频并提示
-          onEvent({ type: 'status', id, msg: '字幕烧录失败，已保留无字幕版本：' + e.message })
-        }
-      } else {
-        onEvent({ type: 'status', id, msg: '未找到对应字幕文件，已保留无字幕版本' })
-      }
-    }
+  if (!first.videoPath || !fs.existsSync(first.videoPath)) {
+    return onEvent({ type: 'error', id, message: '未找到下载产出文件' })
+  }
 
-    onEvent({ type: 'complete', id, filePath: videoPath, title: options.title || path.basename(videoPath) })
+  return finalizeVideo({ id, videoPath: first.videoPath, subPaths: first.subPaths, options, ffmpegPath, onEvent })
+}
+
+// -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
+function startDownload({ url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+  const id = genId()
+  // 后台执行，立即返回 id，避免 IPC 阻塞
+  runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }).catch((e) => {
+    onEvent({ type: 'error', id, message: '下载异常：' + e.message })
   })
-
   return id
 }
 
