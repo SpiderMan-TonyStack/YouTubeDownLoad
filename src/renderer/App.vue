@@ -37,7 +37,7 @@ const tabs = [
 <template>
   <div class="layout">
     <header class="topbar">
-      <div class="brand">📥 YouTube 下载器</div>
+      <div class="brand">📥 YoutubeDownload</div>
       <nav class="tabs">
         <button
           v-for="t in tabs"

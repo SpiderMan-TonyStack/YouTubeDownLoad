@@ -1,7 +1,7 @@
 {
   "name": "youtube-download",
   "version": "1.0.1",
-  "description": "Windows 桌面端图形化 YouTube 下载器（Electron + Vue3 + yt-dlp + ffmpeg），支持中英文硬字幕烧录",
+  "description": "YoutubeDownload - Windows 桌面端图形化 YouTube 视频下载工具（Electron + Vue3 + yt-dlp + ffmpeg），支持中英文硬字幕烧录",
   "author": "Winking",
   "license": "MIT",
   "main": "src/main/index.js",

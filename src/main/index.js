@@ -20,7 +20,7 @@ function createWindow() {
     height: 760,
     minWidth: 860,
     minHeight: 600,
-    title: 'YouTube 下载器',
+    title: 'YoutubeDownload',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,

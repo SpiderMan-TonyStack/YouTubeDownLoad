@@ -1,5 +1,5 @@
 appId: com.youtubedownload.app
-productName: YouTube下载器
+productName: YoutubeDownload
 copyright: Copyright © 2026 Winking
 directories:
   output: release
@@ -25,9 +25,9 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: YouTube下载器
-  artifactName: YouTube下载器-Setup-${version}.exe
+  shortcutName: YoutubeDownload
+  artifactName: YoutubeDownload-Setup-${version}.exe
 portable:
-  artifactName: YouTube下载器-portable-${version}.exe
+  artifactName: YoutubeDownload-portable-${version}.exe
 electronDownload:
   mirror: https://cdn.npmmirror.com/binaries/electron/
