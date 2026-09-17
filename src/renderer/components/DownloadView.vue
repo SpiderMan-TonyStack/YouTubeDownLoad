@@ -12,6 +12,9 @@ const subtitle = ref('none')
 
 const tasks = reactive([])
 const offEvent = ref(null)
+// 补字幕时用来走秒（抓字幕阶段 yt-dlp 不输出百分比，只能显示已用时）
+const nowTick = ref(Date.now())
+let tickTimer = null
 
 const subtitleOptions = [
   { value: 'none', label: '不需要字幕' },
@@ -76,9 +79,9 @@ function fmtSize(b) {
 
 function statusText(t) {
   if (t.retrying) {
-    return t.status === 'burning'
-      ? `字幕烧录中 ${Math.round(t.percent || 0)}%`
-      : t.message || '补字幕中…'
+    if (t.status === 'burning') return `正在烧录字幕 ${Math.round(t.percent || 0)}%`
+    const secs = t.retryStart ? Math.max(0, Math.floor((nowTick.value - t.retryStart) / 1000)) : 0
+    return `正在抓取字幕… 已用 ${secs}s`
   }
   switch (t.status) {
     case 'starting':
@@ -127,34 +130,48 @@ function onEvent(ev) {
       t.retryable = false
     }
   } else if (ev.type === 'error') {
-    t.status = 'error'
-    t.message = ev.message
-    t.retrying = false
-    if (t.retryable) t.note = ''
+    if (t.retrying) {
+      // 补字幕失败：视频本身是好的，不要把整条任务判为失败
+      t.retrying = false
+      t.note = '补字幕失败：' + ev.message
+      t.noteKind = 'bad'
+    } else {
+      t.status = 'error'
+      t.message = ev.message
+      t.note = ''
+    }
   }
 }
 
 async function retrySub(t) {
   if (!t.url || !t.filePath || t.retrying) return
   t.retrying = true
+  t.retryStart = Date.now()
   t.note = '正在重新抓取字幕…'
   t.noteKind = 'warn'
   try {
     await window.api.retrySubtitle({
       id: t.id,
       url: t.url,
-      options: t.options,
+      // 必须深拷贝成普通对象：reactive 里取出的 options 是 Proxy，直接过 IPC 会报
+      // "An object could not be cloned."
+      options: JSON.parse(JSON.stringify(t.options || {})),
       filePath: t.filePath
     })
   } catch (e) {
     t.retrying = false
-    t.status = 'error'
-    t.message = e.message || '补字幕启动失败'
+    t.note = '补字幕启动失败：' + (e.message || e)
+    t.noteKind = 'bad'
   }
 }
 
 function openFile(t) {
   if (t.filePath) window.api.openFolder(t.filePath)
+}
+
+// 抓字幕阶段 yt-dlp 不给百分比 → 用滚动条表示「进行中」；烧录阶段才是有百分比的实进度条
+function isIndeterminate(t) {
+  return !!t.retrying && t.status !== 'burning'
 }
 
 function removeTask(t) {
@@ -164,9 +181,13 @@ function removeTask(t) {
 
 onMounted(() => {
   offEvent.value = window.api.onDownloadEvent(onEvent)
+  tickTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
 })
 onBeforeUnmount(() => {
   offEvent.value && offEvent.value()
+  if (tickTimer) clearInterval(tickTimer)
 })
 </script>
 
@@ -230,7 +251,11 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="t.note" class="task-note" :class="t.noteKind">{{ t.note }}</div>
         <div v-if="t.status === 'downloading' || t.status === 'burning' || t.retrying" class="bar">
-          <div class="fill" :style="{ width: (t.percent || 0) + '%' }"></div>
+          <div
+            class="fill"
+            :class="{ indeterminate: isIndeterminate(t) }"
+            :style="isIndeterminate(t) ? {} : { width: (t.percent || 0) + '%' }"
+          ></div>
         </div>
         <div class="row task-actions">
           <button v-if="t.status === 'done'" class="ghost" @click="openFile(t)">打开文件</button>
@@ -348,9 +373,12 @@ onBeforeUnmount(() => {
 .task-note.ok {
   color: var(--ok-text);
 }
+.task-note.bad {
+  color: var(--red);
+}
 .bar {
   height: 8px;
-  background: #eef0f3;
+  background: var(--track);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -358,6 +386,20 @@ onBeforeUnmount(() => {
   height: 100%;
   background: var(--primary);
   transition: width 0.3s;
+}
+/* 抓字幕阶段：没有百分比，用来回滚动的条表示「进行中」 */
+.fill.indeterminate {
+  width: 32%;
+  transition: none;
+  animation: fill-slide 1.2s ease-in-out infinite;
+}
+@keyframes fill-slide {
+  0% {
+    margin-left: -32%;
+  }
+  100% {
+    margin-left: 100%;
+  }
 }
 .task-actions {
   margin-top: 8px;
