@@ -60,15 +60,18 @@ npm run dev          # 构建渲染端并启动应用
 
 ### 打包为 Windows 安装包 / 便携版
 ```bash
-npm run dist            # NSIS 安装包 -> release/
-npm run dist:portable   # 单文件便携 exe -> release/
+npm run dist            # 一键：构建 nsis + 便携版，并归档到 releases/v<版本>/
+npm run dist:portable   # 只构建便携版
 ```
-> 打包使用 `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）规避 GitHub 443。
+`npm run dist`（= `node scripts/build-release.mjs`）会：
+1. 先 `vite build` 构建渲染端；
+2. 用 electron-builder 打包 nsis + portable，**输出到系统临时目录**——项目根目录**不再生成 `release-*` 构建文件夹**（过去那种残留目录因此消失）；
+3. 把产物归档到 `releases/v<版本>/`（安装包 + 便携版 + README），并同步 `releases/` 顶层的「最新免安装副本」（**只留最新一份**，版本文件夹 `releases/vX.Y.Z/` 一律不动）；
+4. 尽力清理临时构建目录（若 `app.asar` 被杀软 / 索引占用锁住则跳过，仅在系统临时目录残留，不影响项目）。
+
+> 打包使用 `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）规避 GitHub 443；脚本已内置默认值，无需手动加环境变量。
 >
-> **构建排障**：若 `release/` 下的 `win-unpacked/resources/app.asar` 被杀软 / 索引等系统进程占用，导致 `ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`（无法清空输出目录），可改用全新目录绕过，例如：
-> ```bash
-> npx electron-builder --win nsis --config.directories.output=release-nsis
-> ```
+> **历史遗留**：早期用手动全新目录（如 `release-nsis-v103/`）绕过 `app.asar` 文件锁而留下的 `release-*` 目录，若当时锁未释放会删不掉（`app.asar 正由另一进程使用`），**重启机器后手动删除即可**；新流程不会再产生这类目录。
 
 ### 免安装版（portable）使用
 - `npm run dist:portable` 产出 `release/YoutubeDownload-portable-<版本>.exe`：单文件、双击即用、**不写注册表、可放任意目录 / U 盘**。
