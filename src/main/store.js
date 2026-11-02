@@ -15,6 +15,12 @@ const store = new Store({
       clashSecret: '',
       clashGroup: '',
       clashNode: '',
+      // 字幕翻译：中文字幕被 YouTube 限速时，用英文字幕本地翻译出中文
+      translateEnabled: true,
+      translateProvider: 'google', // google | ai
+      translateBaseUrl: 'https://api.deepseek.com/v1',
+      translateApiKey: '',
+      translateModel: 'deepseek-chat',
       theme: 'light'
     }
   }

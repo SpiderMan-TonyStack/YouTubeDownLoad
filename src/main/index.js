@@ -4,6 +4,7 @@ const fs = require('fs')
 const { ensureBinaries, updateYtDlp } = require('./binaries')
 const { parseInfo, startDownload, retrySubtitles, cancel } = require('./downloader')
 const proxy = require('./proxy')
+const { testTranslate } = require('./translator')
 const {
   getHistory,
   addHistory,
@@ -88,6 +89,17 @@ function activeProxy(settings) {
   return settings.proxy || ''
 }
 
+// 字幕翻译配置（只有中文字幕缺失时才会用到）
+function translateConfig(settings) {
+  return {
+    enabled: settings.translateEnabled !== false,
+    provider: settings.translateProvider || 'google',
+    baseUrl: settings.translateBaseUrl || '',
+    apiKey: settings.translateApiKey || '',
+    model: settings.translateModel || ''
+  }
+}
+
 // ---------------- IPC ----------------
 ipcMain.handle('app:ensure-binaries', async () => {
   const settings = getSettings()
@@ -122,6 +134,7 @@ ipcMain.handle('download', async (_e, { url, options }) => {
     options: { ...options, duration: options.duration || 0 },
     outDir: dir,
     proxy: activeProxy(settings),
+    translate: translateConfig(settings),
     onEvent: (ev) => {
       ev.title = options.title
       send('download-event', ev)
@@ -146,6 +159,7 @@ ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
     outDir: path.dirname(filePath),
     proxy: activeProxy(settings),
     videoPath: filePath,
+    translate: translateConfig(settings),
     onEvent: (ev) => {
       ev.title = options.title
       send('download-event', ev)
@@ -196,6 +210,23 @@ ipcMain.handle('proxy:test', async (_e, { proxyUrl }) => {
   const url = proxyUrl || getSettings().proxy || ''
   if (!url) return { ok: false, error: '尚未配置代理地址' }
   return proxy.testProxy(url)
+})
+
+// ---------------- 字幕翻译（中文字幕被限速时用英文字幕翻） ----------------
+// 用当前设置里的引擎与代理翻一句样句，便于用户确认配置是否可用
+ipcMain.handle('translate:test', async (_e, patch) => {
+  const settings = { ...getSettings(), ...(patch || {}) }
+  const cfg = translateConfig(settings)
+  try {
+    const r = await testTranslate({
+      provider: cfg.provider,
+      config: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model },
+      proxy: activeProxy(settings)
+    })
+    return { ok: true, text: r.text, engine: r.engine }
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) }
+  }
 })
 
 // 取消任务：杀掉正在跑的 yt-dlp / ffmpeg（下载与补字幕通用）

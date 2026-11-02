@@ -2,6 +2,7 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const { burnSubtitles } = require('./ffmpeg')
+const { translateSrtFile, translatedSubPath } = require('./translator')
 
 function genId() {
   return 't_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -209,11 +210,80 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
   })
 }
 
-async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onEvent, retried = false }) {
+// 中文字幕缺失时（多因 YouTube 对翻译轨 429 限速），用英文字幕本地翻译出中文。
+// 返回翻译后 srt 的路径；任何失败都返回 null，调用方继续按「只有英文字幕」处理。
+async function ensureTranslatedSub({ id, videoPath, enSub, translate, proxy, onEvent }) {
+  const outPath = translatedSubPath(videoPath)
+
+  // 已翻译过就直接复用：同一视频补字幕时不再重复请求、不重复消耗额度
+  try {
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+      onEvent({ type: 'status', id, msg: '已复用本地已有的中文字幕（英文字幕翻译）' })
+      return outPath
+    }
+  } catch (e) {}
+
+  try {
+    onEvent({ type: 'translate-start', id })
+    onEvent({ type: 'status', id, msg: '中文字幕被限速，正在用英文字幕翻译成中文…' })
+    const r = await translateSrtFile({
+      srtPath: enSub,
+      outPath,
+      provider: translate.provider,
+      config: {
+        baseUrl: translate.baseUrl,
+        apiKey: translate.apiKey,
+        model: translate.model
+      },
+      proxy,
+      shouldStop: () => wasCancelled(id),
+      onProgress: (done, total) => onEvent({ type: 'translate-progress', id, done, total })
+    })
+    onEvent({
+      type: 'warn',
+      id,
+      retryable: false,
+      noteKind: 'ok',
+      msg: `中文字幕被 YouTube 限速，已用英文字幕自动翻译成中文并烧录（${r.cues} 条，${
+        translate.provider === 'ai' ? 'AI 翻译' : '免费翻译'
+      }）。`
+    })
+    return outPath
+  } catch (e) {
+    if (wasCancelled(id)) return null
+    if (e && e.message === 'CANCELLED') return null
+    onEvent({
+      type: 'warn',
+      id,
+      retryable: true,
+      msg: '中文字幕翻译失败（' + e.message + '），本次仍使用英文字幕。可在设置里检查「字幕翻译」配置或代理。'
+    })
+    return null
+  }
+}
+
+async function finalizeVideo({
+  id,
+  videoPath,
+  subPaths,
+  options,
+  ffmpegPath,
+  onEvent,
+  retried = false,
+  translate = null,
+  proxy = ''
+}) {
   // 字幕烧录
   if (options.subtitle && options.subtitle !== 'none' && subPaths.length) {
-    const zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
+    let zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
     const enSub = subPaths.find((s) => /en/i.test(path.basename(s)) && !/zh/i.test(path.basename(s)))
+
+    // 需要中文但没拿到中文字幕 → 用英文字幕本地翻译，绕开被限速的翻译轨
+    if (!zhSub && enSub && translate && translate.enabled) {
+      zhSub = await ensureTranslatedSub({ id, videoPath, enSub, translate, proxy, onEvent })
+      if (wasCancelled(id)) return finishCancelled(id, onEvent)
+    }
+
     // subs.zh = 主字幕槽（底部、大字号）；subs.en = 副字幕槽（顶部、小字号）。
     // 槽位与文件语言无关：例如「仅英文」时英文也放主槽，避免字幕跑到画面顶部。
     const subs = {}
@@ -277,7 +347,7 @@ async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onE
   })
 }
 
-async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }) {
   const template = path.join(outDir, '%(title)s [%(id)s]')
 
   // 第一次：按用户选择尝试下载（含字幕）
@@ -297,16 +367,20 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     const wantsZh = options.subtitle === 'zh' || options.subtitle === 'both'
     const gotZh = partial.some((p) => /zh/i.test(path.basename(p)))
     const degraded = wantsZh && !gotZh && partial.length > 0
+    // 有英文字幕 + 开了翻译 → 这次会自己翻出中文，别提前说「只能用英文」
+    const willTranslate = degraded && translate && translate.enabled
 
     onEvent({
       type: 'warn',
       id,
-      retryable: true,
-      msg: degraded
-        ? '中文字幕被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可点「重试字幕」再试中文。'
-        : is429
-          ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
-          : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
+      retryable: !willTranslate,
+      msg: willTranslate
+        ? '中文字幕被 YouTube 限速（HTTP 429），稍后会用英文字幕自动翻译成中文。'
+        : degraded
+          ? '中文字幕被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可点「重试字幕」再试中文。'
+          : is429
+            ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
+            : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
     })
 
     const second = await runYtDlpOnce({
@@ -333,7 +407,9 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
       subPaths: partial,
       options,
       ffmpegPath,
-      onEvent
+      onEvent,
+      translate,
+      proxy
     })
   }
 
@@ -348,17 +424,33 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     return onEvent({ type: 'error', id, message: '未找到下载产出文件' })
   }
 
-  return finalizeVideo({ id, videoPath: first.videoPath, subPaths: first.subPaths, options, ffmpegPath, onEvent })
+  return finalizeVideo({
+    id,
+    videoPath: first.videoPath,
+    subPaths: first.subPaths,
+    options,
+    ffmpegPath,
+    onEvent,
+    translate,
+    proxy
+  })
 }
 
 // 兜底：yt-dlp 若判定字幕「已下载」会跳过、不再输出 Writing 行，
 // 这时直接按文件名在目录里找一遍（<视频名>.<lang>.srt）
+// 注意排除本应用自己产出的 .zh-translated.srt（翻译缓存），
+// 否则它会被当成「真的中文字幕轨」，抢在真正下载到的 zh-Hans.srt 前面。
 function findSubtitleFiles(outDir, videoPath) {
   const base = path.basename(videoPath, path.extname(videoPath))
   try {
     return fs
       .readdirSync(outDir)
-      .filter((f) => f.startsWith(base + '.') && f.toLowerCase().endsWith('.srt'))
+      .filter(
+        (f) =>
+          f.startsWith(base + '.') &&
+          f.toLowerCase().endsWith('.srt') &&
+          !f.toLowerCase().endsWith('.zh-translated.srt')
+      )
       .map((f) => path.join(outDir, f))
   } catch (e) {
     return []
@@ -366,7 +458,18 @@ function findSubtitleFiles(outDir, videoPath) {
 }
 
 // -------- 补字幕：视频已下载完成，仅重新抓取字幕并烧录（不重下视频） --------
-async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, videoPath, onEvent }) {
+async function retrySubtitles({
+  id,
+  url,
+  ytdlpPath,
+  ffmpegPath,
+  options,
+  outDir,
+  proxy,
+  videoPath,
+  translate,
+  onEvent
+}) {
   if (!options.subtitle || options.subtitle === 'none') {
     return onEvent({ type: 'warn', id, msg: '该任务未选择字幕' })
   }
@@ -396,14 +499,27 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
 
     if (found.length) {
       if (wantsZh && !gotZh) {
+        const willTranslate = translate && translate.enabled
         onEvent({
           type: 'warn',
           id,
-          retryable: true,
-          msg: '中文字幕仍被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可再点「重试字幕」试中文。'
+          retryable: !willTranslate,
+          msg: willTranslate
+            ? '中文字幕仍被 YouTube 限速（HTTP 429），改用英文字幕自动翻译成中文…'
+            : '中文字幕仍被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可再点「重试字幕」试中文。'
         })
       }
-      return finalizeVideo({ id, videoPath, subPaths: found, options, ffmpegPath, onEvent, retried: true })
+      return finalizeVideo({
+        id,
+        videoPath,
+        subPaths: found,
+        options,
+        ffmpegPath,
+        onEvent,
+        retried: true,
+        translate,
+        proxy
+      })
     }
 
     activeTasks.delete(id)
@@ -421,17 +537,37 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
     return onEvent({ type: 'warn', id, msg: '未取到字幕文件，该视频可能没有所选中语言的字幕' })
   }
 
-  return finalizeVideo({ id, videoPath, subPaths: found, options, ffmpegPath, onEvent, retried: true })
+  return finalizeVideo({
+    id,
+    videoPath,
+    subPaths: found,
+    options,
+    ffmpegPath,
+    onEvent,
+    retried: true,
+    translate,
+    proxy
+  })
 }
 
 // -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
-function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }) {
+function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }) {
   const taskId = id || genId()
   // 后台执行，立即返回 id，避免 IPC 阻塞
-  runDownloadLoop({ id: taskId, url, ytdlpPath, ffmpegPath, options, outDir, proxy, onEvent }).catch((e) => {
-    onEvent({ type: 'error', id: taskId, message: '下载异常：' + e.message })
-  })
+  runDownloadLoop({ id: taskId, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }).catch(
+    (e) => {
+      onEvent({ type: 'error', id: taskId, message: '下载异常：' + e.message })
+    }
+  )
   return taskId
 }
 
-module.exports = { parseInfo, startDownload, retrySubtitles, cancel, normalizeInfo }
+module.exports = {
+  parseInfo,
+  startDownload,
+  retrySubtitles,
+  cancel,
+  normalizeInfo,
+  // 导出以便直接驱动「字幕收尾」环节做回归测试（翻译 → 烧录）
+  finalizeVideo
+}

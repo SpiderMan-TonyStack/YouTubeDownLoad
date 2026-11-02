@@ -78,6 +78,12 @@ function fmtSize(b) {
 }
 
 function statusText(t) {
+  // 翻译阶段有真实的总条数，优先显示进度
+  if (t.status === 'translating') {
+    return t.trTotal
+      ? `正在翻译中文字幕 ${t.trDone || 0}/${t.trTotal}`
+      : '正在翻译中文字幕…'
+  }
   if (t.retrying) {
     if (t.status === 'burning') return `正在烧录字幕 ${Math.round(t.percent || 0)}%`
     const secs = t.retryStart ? Math.max(0, Math.floor((nowTick.value - t.retryStart) / 1000)) : 0
@@ -110,6 +116,14 @@ function onEvent(ev) {
     t.percent = ev.percent
     t.speed = ev.speed
     t.eta = ev.eta
+  } else if (ev.type === 'translate-start') {
+    t.status = 'translating'
+    t.trDone = 0
+    t.trTotal = 0
+  } else if (ev.type === 'translate-progress') {
+    t.status = 'translating'
+    t.trDone = ev.done
+    t.trTotal = ev.total
   } else if (ev.type === 'burn-progress') {
     t.status = 'burning'
     t.percent = ev.percent
@@ -120,7 +134,7 @@ function onEvent(ev) {
     // 否则进度条会一直滚、状态永远停在「正在抓取字幕…」
     t.retrying = false
     t.note = ev.msg
-    t.noteKind = 'warn'
+    t.noteKind = ev.noteKind || 'warn'
     t.retryable = ev.retryable !== false
   } else if (ev.type === 'cancelled') {
     t.retrying = false
@@ -190,9 +204,18 @@ function openFile(t) {
   if (t.filePath) window.api.openFolder(t.filePath)
 }
 
-// 抓字幕阶段 yt-dlp 不给百分比 → 用滚动条表示「进行中」；烧录阶段才是有百分比的实进度条
+// 抓字幕阶段 yt-dlp 不给百分比 → 用滚动条表示「进行中」；烧录/翻译阶段都是有真实进度的实进度条
 function isIndeterminate(t) {
+  if (t.status === 'translating') return false
   return !!t.retrying && t.status !== 'burning'
+}
+
+// 进度条百分比：翻译阶段按「已翻条数 / 总条数」，其它阶段用下载/烧录百分比
+function barPercent(t) {
+  if (t.status === 'translating') {
+    return t.trTotal ? Math.min(100, Math.round(((t.trDone || 0) / t.trTotal) * 100)) : 0
+  }
+  return t.percent || 0
 }
 
 function removeTask(t) {
@@ -271,11 +294,14 @@ onBeforeUnmount(() => {
           <span class="status" :class="t.status">{{ statusText(t) }}</span>
         </div>
         <div v-if="t.note" class="task-note" :class="t.noteKind">{{ t.note }}</div>
-        <div v-if="t.status === 'downloading' || t.status === 'burning' || t.retrying" class="bar">
+        <div
+          v-if="t.status === 'downloading' || t.status === 'burning' || t.status === 'translating' || t.retrying"
+          class="bar"
+        >
           <div
             class="fill"
             :class="{ indeterminate: isIndeterminate(t) }"
-            :style="isIndeterminate(t) ? {} : { width: (t.percent || 0) + '%' }"
+            :style="isIndeterminate(t) ? {} : { width: barPercent(t) + '%' }"
           ></div>
         </div>
         <div class="row task-actions">

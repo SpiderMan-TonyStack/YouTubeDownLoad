@@ -9,6 +9,11 @@ const settings = ref({
   clashSecret: '',
   ytdlpPath: '',
   ffmpegPath: '',
+  translateEnabled: true,
+  translateProvider: 'google',
+  translateBaseUrl: 'https://api.deepseek.com/v1',
+  translateApiKey: '',
+  translateModel: 'deepseek-chat',
   theme: 'light'
 })
 
@@ -143,8 +148,44 @@ async function testProxy() {
   }
 }
 
-async function pickDir() {
-  const dir = await window.api.selectDir()
+// ---- 字幕翻译 ----
+const trTesting = ref(false)
+const trMsg = ref('')
+const trOk = ref(false)
+
+function translatePatch() {
+  return {
+    translateEnabled: settings.value.translateEnabled === true,
+    translateProvider: settings.value.translateProvider || 'google',
+    translateBaseUrl: settings.value.translateBaseUrl || '',
+    translateApiKey: settings.value.translateApiKey || '',
+    translateModel: settings.value.translateModel || ''
+  }
+}
+
+async function saveTranslate() {
+  await window.api.saveSettings(translatePatch())
+  trMsg.value = ''
+}
+
+async function testTranslate() {
+  trTesting.value = true
+  trMsg.value = ''
+  try {
+    const r = await window.api.translateTest(translatePatch())
+    trOk.value = !!r.ok
+    trMsg.value = r.ok
+      ? `可用：「${r.text}」`
+      : '失败：' + (r.error || '未知错误')
+  } catch (e) {
+    trOk.value = false
+    trMsg.value = '测试失败：' + (e.message || e)
+  } finally {
+    trTesting.value = false
+  }
+}
+
+async function pickDir() {  const dir = await window.api.selectDir()
   if (dir) {
     settings.value.downloadDir = dir
     await window.api.saveSettings({ downloadDir: dir })
@@ -286,6 +327,72 @@ secret: "自定一个密钥"</pre>
       </div>
     </div>
 
+    <h3>字幕翻译</h3>
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" v-model="settings.translateEnabled" @change="saveTranslate" />
+        <span>中文字幕拿不到时，<b>用英文字幕自动翻译成中文</b></span>
+      </label>
+      <div class="muted note" style="margin-top: 6px">
+        YouTube 对「自动翻译轨」（也就是中文字幕）做 IP 级限速，经常直接返回 429；而英文原生字幕不受影响。
+        所以这里拿到英文字幕后再自己翻一遍，绕开被限速的那条轨道。翻译结果会缓存成
+        <code>视频名.zh-translated.srt</code>，同一视频补字幕时直接复用，不重复请求。
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">翻译引擎</div>
+      <div class="row">
+        <select v-model="settings.translateProvider" class="grow" @change="saveTranslate">
+          <option value="google">免费翻译（无需密钥）</option>
+          <option value="ai">AI 翻译（OpenAI 兼容接口）</option>
+        </select>
+        <button class="ghost" :disabled="trTesting" @click="testTranslate">
+          {{ trTesting ? '翻译中…' : '测试翻译' }}
+        </button>
+      </div>
+      <div v-if="trMsg" class="note" :class="trOk ? 'good' : 'bad'" style="margin-top: 6px">
+        {{ trMsg }}
+      </div>
+    </div>
+
+    <div v-if="settings.translateProvider === 'ai'" class="field">
+      <div class="label">AI 接口（OpenAI 兼容，如 DeepSeek / OpenAI）</div>
+      <div class="row" style="margin-bottom: 6px">
+        <input
+          v-model="settings.translateBaseUrl"
+          class="grow"
+          placeholder="Base URL，如 https://api.deepseek.com/v1"
+          @change="saveTranslate"
+        />
+      </div>
+      <div class="row">
+        <input
+          v-model="settings.translateModel"
+          class="grow"
+          placeholder="模型，如 deepseek-chat"
+          @change="saveTranslate"
+        />
+        <input
+          v-model="settings.translateApiKey"
+          class="grow"
+          type="password"
+          placeholder="API Key"
+          @change="saveTranslate"
+        />
+      </div>
+      <div class="muted note" style="margin-top: 6px">
+        密钥只保存在本机（electron-store），不会上传。AI 翻译能结合上下文修补语音识别的碎句，质量明显好于免费翻译。
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="muted note" style="margin-top: 0">
+        提示：免费翻译需要能访问 Google。若你在国内网络下，请在上方「网络代理」里启用代理并点「测试连通性」——
+        翻译请求会复用同一个代理（**只对本应用生效**）。
+      </div>
+    </div>
+
     <h3>引擎（yt-dlp / ffmpeg）</h3>
     <div class="field">
       <div class="label">yt-dlp 路径</div>
@@ -361,6 +468,13 @@ h3 {
   font-size: 12px;
   margin: 8px 0 0;
   overflow-x: auto;
+}
+.note code {
+  background: var(--track);
+  color: var(--text);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
 }
 select.grow {
   min-width: 120px;

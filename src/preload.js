@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('api', {
   proxySelect: (payload) => ipcRenderer.invoke('proxy:select', payload),
   proxyTest: (payload) => ipcRenderer.invoke('proxy:test', payload || {}),
 
+  translateTest: (patch) => ipcRenderer.invoke('translate:test', patch || {}),
+
   selectBinary: (type) => ipcRenderer.invoke('select-binary', type),
   selectDir: () => ipcRenderer.invoke('select-dir'),
   openFolder: (filePath) => ipcRenderer.invoke('open-folder', filePath)
