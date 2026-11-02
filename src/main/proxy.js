@@ -7,6 +7,8 @@ const HTTP_PROXY_PORTS = [7890, 7897, 7898, 7899, 10809, 1080, 2080, 8888, 8889,
 const CONTROLLER_PORTS = [9090, 9097, 9091, 9095, 6170, 9099]
 
 const HOST = '127.0.0.1'
+// 控制接口 /proxies 可能返回几百 KB，但绝不该到 MB 级；设上限避免异常端点把内存打满
+const MAX_BODY = 8 * 1024 * 1024
 
 function probeTcp(port, timeout = 350) {
   return new Promise((resolve) => {
@@ -44,7 +46,17 @@ function httpRequest({ url, method = 'GET', secret = '', body = null, timeout = 
       { host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method, headers },
       (res) => {
         let data = ''
-        res.on('data', (c) => (data += c))
+        let size = 0
+        res.setEncoding('utf8')
+        res.on('data', (c) => {
+          size += Buffer.byteLength(c)
+          if (size > MAX_BODY) {
+            res.destroy()
+            return resolve({ status: 0, error: '控制接口响应过大，已中断' })
+          }
+          data += c
+        })
+        res.on('error', (e) => resolve({ status: 0, error: e.message }))
         res.on('end', () => resolve({ status: res.statusCode, body: data }))
       }
     )

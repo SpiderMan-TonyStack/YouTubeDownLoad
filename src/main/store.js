@@ -1,4 +1,8 @@
 const Store = require('electron-store')
+const { encrypt, decrypt, isEncrypted } = require('./secrets')
+
+// 需要加密落盘的敏感字段
+const SECRET_KEYS = ['translateApiKey', 'clashSecret']
 
 const store = new Store({
   name: 'youtube-download',
@@ -21,6 +25,8 @@ const store = new Store({
       translateBaseUrl: 'https://api.deepseek.com/v1',
       translateApiKey: '',
       translateModel: 'deepseek-chat',
+      // 引擎下载是否允许走第三方加速镜像（默认关闭：镜像无法保证未被篡改）
+      binaryMirrorEnabled: false,
       theme: 'light'
     }
   }
@@ -64,6 +70,33 @@ function saveSettings(patch) {
   store.set('settings', { ...cur, ...patch })
 }
 
+// 读取解密后的密钥明文（空串表示未配置）
+function getSecret(name) {
+  return decrypt(getSettings()[name] || '')
+}
+
+// 把历史遗留的明文密钥升级为密文（只在启动时跑一次，幂等）
+function migrateSecrets() {
+  const s = getSettings()
+  const patch = {}
+  for (const k of SECRET_KEYS) {
+    const v = s[k]
+    if (v && !isEncrypted(v)) patch[k] = encrypt(v)
+  }
+  if (Object.keys(patch).length) saveSettings(patch)
+  return Object.keys(patch)
+}
+
+// 防泄漏：给渲染进程的副本，敏感字段一律清空、只留"是否已配置"的布尔
+function maskSettings(settings) {
+  const out = { ...settings }
+  for (const k of SECRET_KEYS) {
+    out[`has${k.charAt(0).toUpperCase()}${k.slice(1)}`] = !!out[k]
+    out[k] = ''
+  }
+  return out
+}
+
 module.exports = {
   store,
   getHistory,
@@ -72,5 +105,9 @@ module.exports = {
   removeHistory,
   clearHistory,
   getSettings,
-  saveSettings
+  saveSettings,
+  getSecret,
+  migrateSecrets,
+  maskSettings,
+  SECRET_KEYS
 }

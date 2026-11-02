@@ -11,8 +11,13 @@ const {
   removeHistory,
   clearHistory,
   getSettings,
-  saveSettings
+  saveSettings,
+  getSecret,
+  migrateSecrets,
+  maskSettings,
+  SECRET_KEYS
 } = require('./store')
+const { encrypt } = require('./secrets')
 
 let win = null
 
@@ -95,7 +100,7 @@ function translateConfig(settings) {
     enabled: settings.translateEnabled !== false,
     provider: settings.translateProvider || 'google',
     baseUrl: settings.translateBaseUrl || '',
-    apiKey: settings.translateApiKey || '',
+    apiKey: getSecret('translateApiKey'),
     model: settings.translateModel || ''
   }
 }
@@ -108,9 +113,14 @@ ipcMain.handle('app:ensure-binaries', async () => {
 })
 
 // 把 yt-dlp 强制更新到最新版（YouTube 频繁变动，引擎过旧会导致 403 下载失败）
+// 下载后必须通过官方 SHA-256 校验才会落盘
 ipcMain.handle('app:update-ytdlp', async () => {
-  const p = await updateYtDlp((msg) => send('binaries-status', msg))
-  send('binaries-status', 'yt-dlp 引擎已更新到最新版本')
+  const s = getSettings()
+  const p = await updateYtDlp(
+    (msg) => send('binaries-status', msg),
+    s.binaryMirrorEnabled === true
+  )
+  send('binaries-status', 'yt-dlp 引擎已更新到最新版本（已通过官方校验和验证）')
   return p
 })
 
@@ -144,11 +154,42 @@ ipcMain.handle('download', async (_e, { url, options }) => {
   return id
 })
 
+// 补字幕会「删除原文件并写回同名文件」，所以必须确认这个路径确实是本应用产出的视频。
+// 否则一个被注入的渲染进程就能借这条 IPC 覆盖本机任意视频文件。
+const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov', '.flv', '.avi'])
+
+function assertOwnedVideoFile(filePath, settings) {
+  let abs
+  try {
+    abs = path.resolve(filePath)
+  } catch (e) {
+    throw new Error('视频路径无效')
+  }
+  const ext = path.extname(abs).toLowerCase()
+  if (!VIDEO_EXTS.has(ext)) throw new Error('只支持对视频文件补字幕')
+  let st
+  try {
+    st = fs.statSync(abs)
+  } catch (e) {
+    throw new Error('原视频文件不存在，无法补字幕')
+  }
+  if (!st.isFile()) throw new Error('目标不是文件')
+
+  const dir = settings.downloadDir || defaultDownloadDir()
+  const inDownloadDir = !path.relative(path.resolve(dir), abs).startsWith('..')
+  // 允许「在下载目录内」或「本应用历史记录里登记过的文件」——后者覆盖用户改过下载目录的情况
+  const inHistory = getHistory().some((h) => h.filePath && path.resolve(h.filePath) === abs)
+  if (!inDownloadDir && !inHistory) {
+    throw new Error('该文件不在下载目录内，也不是本应用的下载记录，拒绝操作')
+  }
+  return abs
+}
+
 // 补字幕：视频已下载完成但字幕当时被限速/失败，仅重抓字幕并烧录，不重下视频
 ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
   if (!url || !/^https?:\/\//i.test(url)) throw new Error('缺少有效的视频链接')
-  if (!filePath || !fs.existsSync(filePath)) throw new Error('原视频文件不存在，无法补字幕')
   const settings = getSettings()
+  const safePath = assertOwnedVideoFile(filePath, settings)
   const bins = await ensureBinaries(settings, (msg) => send('binaries-status', msg))
   retrySubtitles({
     id,
@@ -156,9 +197,9 @@ ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
     ytdlpPath: bins.ytDlp,
     ffmpegPath: bins.ffmpeg,
     options: { ...options, duration: options.duration || 0 },
-    outDir: path.dirname(filePath),
+    outDir: path.dirname(safePath),
     proxy: activeProxy(settings),
-    videoPath: filePath,
+    videoPath: safePath,
     translate: translateConfig(settings),
     onEvent: (ev) => {
       ev.title = options.title
@@ -178,7 +219,7 @@ function controllerPortFrom(url) {
 ipcMain.handle('proxy:detect', async () => {
   const s = getSettings()
   const r = await proxy.detect({
-    secret: s.clashSecret || '',
+    secret: getSecret('clashSecret'),
     controllerPort: controllerPortFrom(s.clashController)
   })
   const patch = { proxyPort: r.proxyPort || null }
@@ -186,21 +227,21 @@ ipcMain.handle('proxy:detect', async () => {
   if (r.proxyUrl) patch.proxy = r.proxyUrl
   if (r.controller && !r.controller.needsSecret) patch.clashController = r.controller.url
   saveSettings(patch)
-  return { ...r, settings: getSettings() }
+  return { ...r, settings: maskSettings(getSettings()) }
 })
 
 ipcMain.handle('proxy:nodes', async (_e, { controllerUrl, secret }) => {
   const s = getSettings()
   return proxy.listNodes({
     controllerUrl: controllerUrl || s.clashController,
-    secret: secret || s.clashSecret || ''
+    secret: secret || getSecret('clashSecret')
   })
 })
 
 ipcMain.handle('proxy:select', async (_e, { controllerUrl, secret, group, node }) => {
   const s = getSettings()
   const url = controllerUrl || s.clashController
-  const sec = secret || s.clashSecret || ''
+  const sec = secret || getSecret('clashSecret')
   await proxy.selectNode({ controllerUrl: url, secret: sec, group, node })
   saveSettings({ clashController: url, clashGroup: group, clashNode: node })
   return true
@@ -248,11 +289,21 @@ ipcMain.handle('remove-history', (_e, id) => {
 ipcMain.handle('get-settings', () => {
   const s = getSettings()
   if (!s.downloadDir) s.downloadDir = defaultDownloadDir()
-  return s
+  // 敏感字段一律不回传，只告诉渲染进程"是否已配置"
+  return maskSettings(s)
 })
 ipcMain.handle('save-settings', (_e, patch) => {
-  saveSettings(patch)
-  return getSettings()
+  const p = { ...(patch || {}) }
+  // 密钥字段语义：undefined/空串 = 不改动；null = 清除；其它字符串 = 新值（加密后入库）
+  for (const k of SECRET_KEYS) {
+    if (!(k in p)) continue
+    const v = p[k]
+    if (v === null) p[k] = ''
+    else if (typeof v === 'string' && v !== '') p[k] = encrypt(v)
+    else delete p[k]
+  }
+  saveSettings(p)
+  return maskSettings(getSettings())
 })
 
 ipcMain.handle('select-binary', async (_e, type) => {
@@ -285,7 +336,16 @@ ipcMain.handle('open-folder', async (_e, filePath) => {
   return true
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  // 启动时把历史遗留的明文密钥升级成密文（幂等，失败不影响启动）
+  try {
+    const migrated = migrateSecrets()
+    if (migrated.length) console.log('[secret] 已加密存量密钥字段:', migrated.join(', '))
+  } catch (e) {
+    console.warn('[secret] 密钥迁移失败:', e.message)
+  }
+  createWindow()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

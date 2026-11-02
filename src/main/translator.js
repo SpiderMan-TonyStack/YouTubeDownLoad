@@ -24,6 +24,11 @@ const UA =
 const CACHE_SUFFIX = '.zh-translated.srt'
 const BATCH_SIZE = 40 // 免费端点单次批量；实测 40 行返回顺序与条数完全对齐
 const MAX_RETRY = 3
+// 响应体上限：翻译接口正常只有几百 KB。Base URL 是用户可配的，
+// 一个异常或被劫持的端点返回超大内容就能把主进程内存打满，所以必须设上限。
+const MAX_BODY = 8 * 1024 * 1024
+// 本机地址允许 http（常见的本地 LLM 网关），其它一律要求 https，避免密钥明文外发
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'])
 
 // -------- HTTP(S)：可选经本地 HTTP 代理 --------
 // https 走 CONNECT 隧道后 TLS 升级；http（如本地 LLM 网关）走「绝对 URI」形式。
@@ -36,8 +41,13 @@ function request(urlStr, { proxy = '', method = 'GET', headers = {}, body = null
       return reject(new Error('翻译接口地址无效：' + urlStr))
     }
     const isHttps = u.protocol === 'https:'
-    if (!isHttps && u.protocol !== 'http:') {
-      return reject(new Error('翻译接口只支持 http/https 地址'))
+    if (!isHttps) {
+      if (u.protocol !== 'http:') return reject(new Error('翻译接口只支持 http/https 地址'))
+      // 明文 http 只在访问本机时放行（本地 LLM 网关 / mock 服务），
+      // 远程地址必须走 https —— 否则 API Key 会以明文经过网络
+      if (!LOOPBACK_HOSTS.has(u.hostname.toLowerCase())) {
+        return reject(new Error('翻译接口地址必须是 https（仅本机地址允许使用 http）'))
+      }
     }
     const h = { 'user-agent': UA, accept: '*/*', ...headers }
     if (body) h['content-length'] = Buffer.byteLength(body)
@@ -45,8 +55,17 @@ function request(urlStr, { proxy = '', method = 'GET', headers = {}, body = null
 
     const onRes = (res) => {
       let data = ''
+      let size = 0
       res.setEncoding('utf8')
-      res.on('data', (d) => (data += d))
+      res.on('data', (d) => {
+        size += Buffer.byteLength(d)
+        if (size > MAX_BODY) {
+          res.destroy()
+          return reject(new Error('翻译接口响应体过大，已中断'))
+        }
+        data += d
+      })
+      res.on('error', reject)
       res.on('end', () => resolve({ status: res.statusCode, body: data }))
     }
     const fire = (opts) => {

@@ -7,15 +7,33 @@ const settings = ref({
   proxyEnabled: false,
   clashController: '',
   clashSecret: '',
+  hasClashSecret: false,
   ytdlpPath: '',
   ffmpegPath: '',
   translateEnabled: true,
   translateProvider: 'google',
   translateBaseUrl: 'https://api.deepseek.com/v1',
   translateApiKey: '',
+  hasTranslateApiKey: false,
   translateModel: 'deepseek-chat',
+  binaryMirrorEnabled: false,
   theme: 'light'
 })
+
+// 密钥输入框独立于 settings：主进程只回传「是否已配置」，真值永远不回到渲染进程。
+// 留空 = 保持不变；填了 = 覆盖；点「清除」= 显式传 null 删除。
+const clashSecretInput = ref('')
+const apiKeyInput = ref('')
+
+// 保存后主进程会回传掩码后的设置，用它同步本地状态；clearInputs 用于清空密钥输入框
+function applyMasked(r, clearInputs = false) {
+  if (!r) return
+  settings.value = { ...settings.value, ...r }
+  if (clearInputs) {
+    clashSecretInput.value = ''
+    apiKeyInput.value = ''
+  }
+}
 
 // 主题预览色板：key 与 styles.css 的 [data-theme=xxx] 一一对应
 const THEMES = [
@@ -65,12 +83,22 @@ onMounted(async () => {
 onBeforeUnmount(() => offBins.value && offBins.value())
 
 async function saveProxy() {
-  await window.api.saveSettings({
+  const patch = {
     proxy: settings.value.proxy || '',
     proxyEnabled: settings.value.proxyEnabled === true,
-    clashController: settings.value.clashController || '',
-    clashSecret: settings.value.clashSecret || ''
-  })
+    clashController: settings.value.clashController || ''
+  }
+  if (clashSecretInput.value) patch.clashSecret = clashSecretInput.value
+  const r = await window.api.saveSettings(patch)
+  applyMasked(r, true)
+}
+
+// 显式清除已保存的代理控制接口密钥
+async function clearClashSecret() {
+  const r = await window.api.saveSettings({ clashSecret: null })
+  applyMasked(r, true)
+  testMsg.value = ''
+  detectMsg.value = '已清除代理控制接口密钥'
 }
 
 async function detectProxy() {
@@ -154,29 +182,46 @@ const trMsg = ref('')
 const trOk = ref(false)
 
 function translatePatch() {
-  return {
+  const patch = {
     translateEnabled: settings.value.translateEnabled === true,
     translateProvider: settings.value.translateProvider || 'google',
     translateBaseUrl: settings.value.translateBaseUrl || '',
-    translateApiKey: settings.value.translateApiKey || '',
     translateModel: settings.value.translateModel || ''
   }
+  // 只有用户真的输入了新密钥才提交；留空表示沿用已保存的那份
+  if (apiKeyInput.value) patch.translateApiKey = apiKeyInput.value
+  return patch
 }
 
 async function saveTranslate() {
-  await window.api.saveSettings(translatePatch())
+  const r = await window.api.saveSettings(translatePatch())
+  applyMasked(r, true)
   trMsg.value = ''
+}
+
+async function clearApiKey() {
+  const r = await window.api.saveSettings({ translateApiKey: null })
+  applyMasked(r, true)
+  trMsg.value = '已清除已保存的 API Key'
+  trOk.value = true
+}
+
+async function saveBinaryMirror() {
+  const r = await window.api.saveSettings({
+    binaryMirrorEnabled: settings.value.binaryMirrorEnabled === true
+  })
+  applyMasked(r)
 }
 
 async function testTranslate() {
   trTesting.value = true
   trMsg.value = ''
   try {
-    const r = await window.api.translateTest(translatePatch())
+    // 先落盘再测试，保证测的就是将要使用的配置
+    await saveTranslate()
+    const r = await window.api.translateTest({})
     trOk.value = !!r.ok
-    trMsg.value = r.ok
-      ? `可用：「${r.text}」`
-      : '失败：' + (r.error || '未知错误')
+    trMsg.value = r.ok ? `可用：「${r.text}」` : '失败：' + (r.error || '未知错误')
   } catch (e) {
     trOk.value = false
     trMsg.value = '测试失败：' + (e.message || e)
@@ -316,7 +361,16 @@ secret: "自定一个密钥"</pre>
           placeholder="控制接口（可选）http://127.0.0.1:9090"
           @change="saveProxy"
         />
-        <input v-model="settings.clashSecret" class="grow" placeholder="密钥 secret（可选）" @change="saveProxy" />
+        <input
+          v-model="clashSecretInput"
+          class="grow"
+          type="password"
+          :placeholder="settings.hasClashSecret ? '密钥已保存（留空则不修改）' : '密钥 secret（可选）'"
+          @change="saveProxy"
+        />
+        <button v-if="settings.hasClashSecret" class="ghost" title="清除已保存的密钥" @click="clearClashSecret">
+          清除
+        </button>
         <button class="ghost" @click="loadNodes">读取节点</button>
       </div>
     </div>
@@ -374,15 +428,24 @@ secret: "自定一个密钥"</pre>
           @change="saveTranslate"
         />
         <input
-          v-model="settings.translateApiKey"
+          v-model="apiKeyInput"
           class="grow"
           type="password"
-          placeholder="API Key"
+          :placeholder="settings.hasTranslateApiKey ? '密钥已保存（留空则不修改）' : 'API Key'"
           @change="saveTranslate"
         />
+        <button
+          v-if="settings.hasTranslateApiKey"
+          class="ghost"
+          title="清除已保存的 API Key"
+          @click="clearApiKey"
+        >
+          清除
+        </button>
       </div>
       <div class="muted note" style="margin-top: 6px">
-        密钥只保存在本机（electron-store），不会上传。AI 翻译能结合上下文修补语音识别的碎句，质量明显好于免费翻译。
+        密钥用系统凭据加密后保存在本机（Windows DPAPI），界面与页面脚本都拿不到明文；只在你填写时提交一次。
+        AI 翻译能结合上下文修补语音识别的碎句，质量明显好于免费翻译。
       </div>
     </div>
 
@@ -412,6 +475,22 @@ secret: "自定一个密钥"</pre>
       <button @click="ensure">检测 / 补齐引擎组件</button>
       <button class="ghost" @click="updateYtdlp">更新 yt-dlp 引擎（最新）</button>
       <span v-if="binsStatus" class="muted">{{ binsStatus }}</span>
+    </div>
+
+    <div class="field" style="margin-top: 10px">
+      <label class="check">
+        <input
+          type="checkbox"
+          v-model="settings.binaryMirrorEnabled"
+          @change="saveBinaryMirror"
+        />
+        <span>允许使用第三方加速镜像下载引擎（<b>默认关闭</b>）</span>
+      </label>
+      <div class="muted note" style="margin-top: 6px">
+        引擎是可执行文件，下载后会被直接运行，所以默认只走官方源，并强制用<b>官方公布的 SHA-256</b> 校验；
+        校验不通过就拒绝安装。仅当官方源完全连不上时才建议打开镜像兜底 —— 镜像内容无法独立验证，
+        仍然要靠官方校验和把关，因此安全性取决于校验和能否取到。
+      </div>
     </div>
     <p class="muted note">
       说明：首次运行会自动从官方源下载 yt-dlp 与 ffmpeg 到用户数据目录；如你的网络无法访问，可手动「选择」本地已有的 exe。
