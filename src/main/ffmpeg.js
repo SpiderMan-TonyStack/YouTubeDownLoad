@@ -1,6 +1,7 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
+const { sanitizeSrtInPlace } = require('./subtitle-fix')
 
 // 将 Windows 路径转换为 ffmpeg subtitles 滤镜可用的形式（正斜杠 + 转义冒号）
 function escSubPath(p) {
@@ -25,19 +26,26 @@ function buildSubtitleFilter(subs) {
   return filters.join(',')
 }
 
-// 把字幕复制到视频同目录的临时固定名，避免路径转义问题
+// 把字幕复制到视频同目录的临时固定名，避免路径转义问题。
+// 复制完立刻修一遍时间轴：YouTube 自动字幕的 cue 之间存在大量重叠，
+// 不修的话 libass 会把同时激活的多条对话一起画出来（叠字 + 顺序颠倒）。
 function copySubsToWorkdir(videoPath, subs) {
   const dir = path.dirname(videoPath)
   const out = {}
-  if (subs.zh) {
-    const t = path.join(dir, 'sub_zh.srt')
-    fs.copyFileSync(subs.zh, t)
-    out.zh = t
-  }
-  if (subs.en) {
-    const t = path.join(dir, 'sub_en.srt')
-    fs.copyFileSync(subs.en, t)
-    out.en = t
+  for (const [slot, src] of [
+    ['zh', subs.zh],
+    ['en', subs.en]
+  ]) {
+    if (!src) continue
+    const t = path.join(dir, `sub_${slot}.srt`)
+    fs.copyFileSync(src, t)
+    const st = sanitizeSrtInPlace(t)
+    if (st.trimmed) {
+      console.log(`[subtitle] ${slot}: 裁剪 ${st.trimmed}/${st.cues} 条重叠 cue，最短 ${st.minDur}ms`)
+    } else if (st.error) {
+      console.warn(`[subtitle] ${slot}: 时间轴修复失败，按原文件烧录 - ${st.error}`)
+    }
+    out[slot] = t
   }
   return out
 }
