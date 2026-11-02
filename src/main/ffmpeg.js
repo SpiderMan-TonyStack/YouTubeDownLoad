@@ -1,4 +1,5 @@
 const { spawn } = require('child_process')
+const { StringDecoder } = require('string_decoder')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -107,8 +108,11 @@ function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent
     const p = spawn(ffmpegPath, args, { shell: false, windowsHide: true })
     if (registerProc) registerProc(p)
     let stderr = ''
+    // ffmpeg 的进度条用 \r 原地刷新，不需要按行切；但必须用 StringDecoder 解码，
+    // 否则多字节字符被 chunk 劈开会变成 �，报错信息里就会出现乱码。
+    const errDec = new StringDecoder('utf8')
     p.stderr.on('data', (d) => {
-      const s = d.toString()
+      const s = errDec.write(d)
       // 只保留尾部：ffmpeg 日志会长到几 MB，而报错信息都在最后几百字符
       stderr = (stderr + s).slice(-32 * 1024)
       if (duration) {
@@ -122,6 +126,8 @@ function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent
     })
     p.on('close', (code) => {
       cleanupWorkdir(dir)
+      // 把解码器里剩余字节吐出来，避免最后半个字符丢失
+      stderr = (stderr + errDec.end()).slice(-32 * 1024)
       if (code !== 0) {
         return reject(new Error('字幕烧录失败：' + stderr.slice(-300)))
       }

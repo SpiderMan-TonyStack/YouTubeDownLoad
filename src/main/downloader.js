@@ -1,8 +1,39 @@
 const { spawn } = require('child_process')
+const { StringDecoder } = require('string_decoder')
 const fs = require('fs')
 const path = require('path')
 const { burnSubtitles } = require('./ffmpeg')
 const { translateSrtFile, translatedSubPath } = require('./translator')
+
+// 把子进程输出按「行」切分，跨 chunk 的残行留到下一次一起处理。
+//
+// 不能直接 `d.toString().split(/\r?\n/)`，有两个坑：
+//   1) 一行被 chunk 边界劈开 → 得到两条半行，Destination / Merging formats /
+//      Writing subtitles 捕获到**截断的路径** → 找不到产物，任务报"未找到下载产出文件"；
+//   2) 多字节 UTF-8 被劈开 → 两个半字符各自变成 U+FFFD(�)，表现为**标题乱码**。
+//      而且 JSON.parse 不会失败，属于静默损坏，很难排查。
+// 用 StringDecoder 处理解码，再自己留残行缓冲，两个问题一起解决。
+function makeLineBuffer(onLine) {
+  let buf = ''
+  return {
+    write(text) {
+      if (!text) return
+      buf += text
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        onLine(buf.slice(0, i).replace(/\r$/, ''))
+        buf = buf.slice(i + 1)
+      }
+    },
+    // 收尾时把最后一段没有换行结尾的内容也吐出去
+    flush() {
+      if (buf) {
+        onLine(buf.replace(/\r$/, ''))
+        buf = ''
+      }
+    }
+  }
+}
 
 function genId() {
   return 't_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -17,9 +48,14 @@ function parseInfo(url, ytdlpPath, proxy) {
     const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
     let out = ''
     let err = ''
-    p.stdout.on('data', (d) => (out += d))
-    p.stderr.on('data', (d) => (err += d))
+    const outDec = new StringDecoder('utf8')
+    const errDec = new StringDecoder('utf8')
+    p.stdout.on('data', (d) => (out += outDec.write(d)))
+    p.stderr.on('data', (d) => (err += errDec.write(d)))
     p.on('close', (code) => {
+      // 收尾时把解码器里剩余的字节吐出来，避免最后一个字符丢失
+      out += outDec.end()
+      err += errDec.end()
       if (code !== 0) {
         return reject(new Error(parseYtDlpError(err) || '解析失败（链接无效或网络不可达）'))
       }
@@ -199,16 +235,28 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
     const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
     const entry = taskEntry(id)
     entry.ytdlp = p
-    p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
+
+    // stdout / stderr 各自一套解码器 + 残行缓冲（两个流不能共用一个 StringDecoder）
+    const outDec = new StringDecoder('utf8')
+    const outLines = makeLineBuffer(handleLine)
+    const errDec = new StringDecoder('utf8')
+    const errLines = makeLineBuffer(handleLine)
+
+    p.stdout.on('data', (d) => outLines.write(outDec.write(d)))
     p.stderr.on('data', (d) => {
-      const text = d.toString()
-      errOut = (errOut + text).slice(-ERR_TAIL)
-      text.split(/\r?\n/).forEach(handleLine)
+      const s = errDec.write(d)
+      errOut = (errOut + s).slice(-ERR_TAIL)
+      errLines.write(s)
     })
 
     p.on('error', (e) => reject(e))
     p.on('close', (code) => {
       if (entry.ytdlp === p) entry.ytdlp = null
+      // 把两个流残留的半行吐完再收尾（例如最后一行没有换行结尾）
+      outLines.write(outDec.end())
+      outLines.flush()
+      errLines.write(errDec.end())
+      errLines.flush()
       // merged 表示「音视频已经合流完成」——这是区分「成品」与「仅某一路流」的关键信号
       resolve({ code, videoPath: mergedDest || lastDest, merged: !!mergedDest, subPaths, errOut })
     })
