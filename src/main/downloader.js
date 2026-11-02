@@ -205,7 +205,8 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
     p.on('error', (e) => reject(e))
     p.on('close', (code) => {
       if (entry.ytdlp === p) entry.ytdlp = null
-      resolve({ code, videoPath: mergedDest || lastDest, subPaths, errOut })
+      // merged 表示「音视频已经合流完成」——这是区分「成品」与「仅某一路流」的关键信号
+      resolve({ code, videoPath: mergedDest || lastDest, merged: !!mergedDest, subPaths, errOut })
     })
   })
 }
@@ -384,6 +385,23 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
             ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
             : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
     })
+
+    // 关键：字幕失败发生在「音视频已合流之后」，此时成品已在磁盘上。
+    // 之前一律重跑一遍 yt-dlp，等于把整个视频再下一次（进度条会走两趟 0%→100%）。
+    // 只要 merged 为真且文件存在，就直接进字幕收尾，省掉一次完整传输与合流。
+    if (first.merged && first.videoPath && fs.existsSync(first.videoPath)) {
+      onEvent({ type: 'status', id, msg: '视频已下载完成，正在处理字幕…' })
+      return finalizeVideo({
+        id,
+        videoPath: first.videoPath,
+        subPaths: partial,
+        options,
+        ffmpegPath,
+        onEvent,
+        translate,
+        proxy
+      })
+    }
 
     const second = await runYtDlpOnce({
       args: buildArgs({ url, options: { ...options, subtitle: 'none' }, template, proxy, ffmpegPath }),

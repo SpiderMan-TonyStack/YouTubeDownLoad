@@ -1,5 +1,6 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const { sanitizeSrtInPlace, buildBilingualSrt } = require('./subtitle-fix')
 
@@ -27,12 +28,29 @@ function buildSubtitleFilter(subs) {
   return ''
 }
 
-// 把字幕复制到视频同目录的临时固定名，避免路径转义问题。
+// 给字幕准备一个**独立的临时工作目录**（每次烧录唯一）。
+//
+// 为什么不放在视频旁边：字幕路径是唯一会进入 ffmpeg 滤镜串的东西，而滤镜语法里
+// 单引号无法转义（实测 `\'` 不被接受）。下载目录一旦含 `'`（如 D:\Bob's Videos），
+// 整个滤镜串就会被解析失败 → 烧录直接报错。放到受控的临时目录就绕开了这个坑。
+// 顺带修掉另一个隐患：原来固定用 sub_zh.srt 放在视频目录，同目录并发两个任务会互相覆盖。
+function makeSubWorkdir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-sub-'))
+}
+
+function cleanupWorkdir(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+  } catch (e) {
+    // 被占用删不掉时忽略，系统临时目录会自行清理
+  }
+}
+
+// 把字幕复制到工作目录的临时固定名，避免路径转义问题。
 // 复制完立刻修一遍时间轴：YouTube 自动字幕的 cue 之间存在大量重叠，
 // 不修的话 libass 会把同时激活的多条对话一起画出来（叠字 + 顺序颠倒）。
 // 中英都有时再合成一份双语 srt，交给单个滤镜烧录。
-function copySubsToWorkdir(videoPath, subs) {
-  const dir = path.dirname(videoPath)
+function copySubsToWorkdir(dir, subs) {
   const out = {}
   for (const [slot, src] of [
     ['zh', subs.zh],
@@ -65,21 +83,25 @@ function copySubsToWorkdir(videoPath, subs) {
   return out
 }
 
-function cleanupWorkdirSubs(videoPath) {
-  const dir = path.dirname(videoPath)
-  for (const f of ['sub_zh.srt', 'sub_en.srt', 'sub_both.srt']) {
-    const p = path.join(dir, f)
-    if (fs.existsSync(p)) fs.unlinkSync(p)
-  }
-}
-
 // 烧录字幕到新文件；返回 Promise<outPath>
 // onEvent(type, data): 'burn-status' {msg}, 'burn-progress' {percent}
 // registerProc(proc): 可选，把 ffmpeg 进程交出去，便于外部取消
 function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent, registerProc }) {
   return new Promise((resolve, reject) => {
-    const work = copySubsToWorkdir(videoPath, subs)
+    let dir
+    let work
+    try {
+      dir = makeSubWorkdir()
+      work = copySubsToWorkdir(dir, subs)
+    } catch (e) {
+      if (dir) cleanupWorkdir(dir)
+      return reject(new Error('字幕准备失败：' + e.message))
+    }
     const vf = buildSubtitleFilter(work)
+    if (!vf) {
+      cleanupWorkdir(dir)
+      return reject(new Error('没有可烧录的字幕'))
+    }
     const args = ['-y', '-i', videoPath, '-vf', vf, '-c:a', 'copy', '-preset', 'veryfast', outPath]
 
     const p = spawn(ffmpegPath, args, { shell: false, windowsHide: true })
@@ -98,14 +120,14 @@ function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent
       }
     })
     p.on('close', (code) => {
-      cleanupWorkdirSubs(videoPath)
+      cleanupWorkdir(dir)
       if (code !== 0) {
         return reject(new Error('字幕烧录失败：' + stderr.slice(-300)))
       }
       resolve(outPath)
     })
     p.on('error', (e) => {
-      cleanupWorkdirSubs(videoPath)
+      cleanupWorkdir(dir)
       reject(e)
     })
   })

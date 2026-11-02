@@ -67,25 +67,36 @@ function toSrt(cues) {
 }
 
 // 裁掉与前一条重叠的部分：end_i 最多到 start_{i+1} - GAP
+// 若两条起始时间挤在一起、连最短间隙都放不下（如两条 cue 同一时刻开始），
+// 就把文本并成一条、时间取并集 —— **绝不能压成 0 时长**，那等于字幕凭空消失。
 function clipOverlaps(cues) {
+  const out = []
   let trimmed = 0
-  let minDur = Infinity
-  for (let i = 0; i < cues.length; i++) {
-    const next = cues[i + 1]
-    if (next) {
-      const limit = next.start - GAP_MS
-      if (cues[i].end > limit && limit > cues[i].start) {
-        cues[i].end = limit
+  let merged = 0
+  for (const c of cues) {
+    const prev = out[out.length - 1]
+    if (prev && prev.end > c.start) {
+      const limit = c.start - GAP_MS
+      if (limit > prev.start) {
+        prev.end = limit
         trimmed++
+      } else {
+        const text = (prev.text + ' ' + c.text).replace(/\s+/g, ' ').trim()
+        c.text = text
+        c.start = prev.start
+        c.end = Math.max(prev.end, c.end)
+        out.pop()
+        merged++
       }
     }
-    // 兜底：裁完仍然跨过下一条开始的（下一条开始时间 <= 本条开始的异常数据），
-    // 直接压到本条开始处，宁可这一条不显示，也不要继续叠字
-    if (next && cues[i].end > next.start) cues[i].end = cues[i].start
-    const dur = cues[i].end - cues[i].start
+    out.push(c)
+  }
+  let minDur = Infinity
+  for (const c of out) {
+    const dur = c.end - c.start
     if (dur < minDur) minDur = dur
   }
-  return { trimmed, minDur: cues.length ? minDur : 0 }
+  return { trimmed, merged, minDur: out.length ? minDur : 0, cues: out }
 }
 
 // 就地修复一个 srt 文件；返回统计信息
@@ -106,10 +117,18 @@ function sanitizeSrtInPlace(filePath) {
       return { cues: cues.length, trimmed: 0, minDur: 0, changed: false }
     }
 
-    const { trimmed, minDur } = clipOverlaps(cues)
-    if (!trimmed) return { cues: cues.length, trimmed: 0, minDur, changed: false }
-    fs.writeFileSync(filePath, toSrt(cues), 'utf8')
-    return { cues: cues.length, trimmed, minDur, changed: true }
+    const res = clipOverlaps(cues)
+    if (!res.trimmed && !res.merged) {
+      return { cues: cues.length, trimmed: 0, merged: 0, minDur: res.minDur, changed: false }
+    }
+    fs.writeFileSync(filePath, toSrt(res.cues), 'utf8')
+    return {
+      cues: res.cues.length,
+      trimmed: res.trimmed,
+      merged: res.merged,
+      minDur: res.minDur,
+      changed: true
+    }
   } catch (e) {
     // 修复失败绝不能影响下载主流程：保留原文件继续烧录
     return { cues: 0, trimmed: 0, minDur: 0, changed: false, error: e.message }
