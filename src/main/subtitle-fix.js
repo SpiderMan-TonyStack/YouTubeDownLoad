@@ -116,4 +116,53 @@ function sanitizeSrtInPlace(filePath) {
   }
 }
 
-module.exports = { sanitizeSrtInPlace, parseSrt, toSrt, clipOverlaps, formatTime }
+// 把中英两轨合成一份 srt：同一条字幕里，中文一行在上、英文一行在下。
+//
+// 为什么必须合成而不是「两个 subtitles 滤镜各画一遍」：每个滤镜都是一个独立的 ASS
+// 渲染器，各自从底部排版，两行会直接压在一起。合成成一个多行事件后，libass 会把它
+// 当作一个整体块来排版（自动避让、换行也算得对），两种语言永远不会互相覆盖。
+//
+// 两轨条数常常不一致（中文翻译轨可能少几条），所以按「条数多的那条」当主轴，
+// 另一条用「时间重叠最多」匹配；相邻重复的副语言文本会被留空，避免同一句显示两遍。
+function buildBilingualSrt(zhPath, enPath, outPath) {
+  const zh = parseSrt(fs.readFileSync(zhPath, 'utf8'))
+  const en = parseSrt(fs.readFileSync(enPath, 'utf8'))
+  if (!zh.length || !en.length) return null
+
+  const primaryIsZh = zh.length >= en.length
+  const primary = primaryIsZh ? zh : en
+  const secondary = primaryIsZh ? en : zh
+
+  const oneLine = (t) => String(t).replace(/\s*\n\s*/g, ' ').trim()
+  let lastSecondary = null
+  const cues = primary.map((c) => {
+    let best = null
+    let bestOv = 0
+    for (const s of secondary) {
+      const ov = Math.min(c.end, s.end) - Math.max(c.start, s.start)
+      if (ov > bestOv) {
+        bestOv = ov
+        best = s
+      }
+    }
+    const sec = best && bestOv > 0 ? oneLine(best.text) : ''
+    const useSec = sec && sec !== lastSecondary ? sec : ''
+    if (sec) lastSecondary = sec
+    const main = oneLine(c.text)
+    // 主轴是英文时，要让中文仍然排在上面 → 顺序反一下
+    const text = !useSec ? main : primaryIsZh ? main + '\n' + useSec : useSec + '\n' + main
+    return { start: c.start, end: c.end, text }
+  })
+
+  fs.writeFileSync(outPath, toSrt(cues), 'utf8')
+  return { cues: cues.length }
+}
+
+module.exports = {
+  sanitizeSrtInPlace,
+  buildBilingualSrt,
+  parseSrt,
+  toSrt,
+  clipOverlaps,
+  formatTime
+}

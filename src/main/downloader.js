@@ -284,8 +284,10 @@ async function finalizeVideo({
       if (wasCancelled(id)) return finishCancelled(id, onEvent)
     }
 
-    // subs.zh = 主字幕槽（底部、大字号）；subs.en = 副字幕槽（顶部、小字号）。
-    // 槽位与文件语言无关：例如「仅英文」时英文也放主槽，避免字幕跑到画面顶部。
+    // subs.zh = 主字幕轨（单轨时独占画面底部）；subs.en = 副字幕轨。
+    // 中英都有时，ffmpeg.js 会把两轨合成一份双语 srt 再烧 —— 这样两种语言在画面底部
+    // 上下相邻、不会互相压住（不能靠「两个滤镜各自 Alignment=2」实现，那样会叠在一起）。
+    // 槽位与文件语言无关：例如「仅英文」时英文也放主槽。
     const subs = {}
     const primary = zhSub || enSub
     if (options.subtitle === 'en') {

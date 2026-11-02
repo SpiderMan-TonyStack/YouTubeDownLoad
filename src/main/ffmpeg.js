@@ -1,34 +1,36 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
-const { sanitizeSrtInPlace } = require('./subtitle-fix')
+const { sanitizeSrtInPlace, buildBilingualSrt } = require('./subtitle-fix')
 
-// 将 Windows 路径转换为 ffmpeg subtitles 滤镜可用的形式（正斜杠 + 转义冒号）
+// 把 Windows 路径转换为 ffmpeg subtitles 滤镜可用的形式（正斜杠 + 转义冒号）
 function escSubPath(p) {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:')
 }
 
-// subs: { zh?: 绝对路径, en?: 绝对路径 }
+// 描边样式：亮背景（天空、白墙、文档）下不加描边的白字会糊成一片
+const STROKE = 'BorderStyle=1,Outline=2,Shadow=1,Alignment=2,PrimaryColour=&H00FFFFFF&'
+
+// subs: { zh?: 路径, en?: 路径, both?: 双语合成后的路径 }
 // 返回 ffmpeg 的 -vf 参数值（字幕滤镜链）
 function buildSubtitleFilter(subs) {
-  const filters = []
+  // 双语：已经合成成一份多行 srt，只挂一个滤镜，两种语言在画面底部上下相邻
+  if (subs.both) {
+    return `subtitles='${escSubPath(subs.both)}':force_style='${STROKE},FontSize=20'`
+  }
   if (subs.zh) {
-    filters.push(
-      `subtitles='${escSubPath(subs.zh)}':force_style='FontSize=24,PrimaryColour=&H00FFFFFF&'`
-    )
+    return `subtitles='${escSubPath(subs.zh)}':force_style='${STROKE},FontSize=24'`
   }
   if (subs.en) {
-    // 英文字幕放顶部（Alignment=6）
-    filters.push(
-      `subtitles='${escSubPath(subs.en)}':force_style='FontSize=18,PrimaryColour=&H00CCCCCC&,Alignment=6'`
-    )
+    return `subtitles='${escSubPath(subs.en)}':force_style='${STROKE},FontSize=24'`
   }
-  return filters.join(',')
+  return ''
 }
 
 // 把字幕复制到视频同目录的临时固定名，避免路径转义问题。
 // 复制完立刻修一遍时间轴：YouTube 自动字幕的 cue 之间存在大量重叠，
 // 不修的话 libass 会把同时激活的多条对话一起画出来（叠字 + 顺序颠倒）。
+// 中英都有时再合成一份双语 srt，交给单个滤镜烧录。
 function copySubsToWorkdir(videoPath, subs) {
   const dir = path.dirname(videoPath)
   const out = {}
@@ -47,12 +49,25 @@ function copySubsToWorkdir(videoPath, subs) {
     }
     out[slot] = t
   }
+  if (out.zh && out.en) {
+    const merged = path.join(dir, 'sub_both.srt')
+    try {
+      const r = buildBilingualSrt(out.zh, out.en, merged)
+      if (r && r.cues) {
+        out.both = merged
+        console.log(`[subtitle] 双语合成 ${r.cues} 条（中文在上、英文在下，同置画面底部）`)
+      }
+    } catch (e) {
+      // 合成失败就退回只烧中文（主槽），不让整片失败
+      console.warn('[subtitle] 双语合成失败，改为只烧中文字幕 - ' + e.message)
+    }
+  }
   return out
 }
 
 function cleanupWorkdirSubs(videoPath) {
   const dir = path.dirname(videoPath)
-  for (const f of ['sub_zh.srt', 'sub_en.srt']) {
+  for (const f of ['sub_zh.srt', 'sub_en.srt', 'sub_both.srt']) {
     const p = path.join(dir, f)
     if (fs.existsSync(p)) fs.unlinkSync(p)
   }
