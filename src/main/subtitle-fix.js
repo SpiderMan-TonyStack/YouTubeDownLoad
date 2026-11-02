@@ -149,15 +149,22 @@ function buildBilingualSrt(zhPath, enPath, outPath) {
   if (!zh.length || !en.length) return null
 
   const primaryIsZh = zh.length >= en.length
-  const primary = primaryIsZh ? zh : en
-  const secondary = primaryIsZh ? en : zh
+  // 双指针对齐要求按开始时间有序；真实 srt 本来就有序，sort 只是兜底
+  const byStart = (a, b) => a.start - b.start
+  const primary = (primaryIsZh ? zh : en).slice().sort(byStart)
+  const secondary = (primaryIsZh ? en : zh).slice().sort(byStart)
 
   const oneLine = (t) => String(t).replace(/\s*\n\s*/g, ' ').trim()
   let lastSecondary = null
+  // 副轨游标单调前进，整体从 O(n·m) 降到 O(n+m)：
+  // 一条副轨一旦「结束时间早于当前主轨开始」，它就不可能再与后续任何主轨重叠。
+  let j = 0
   const cues = primary.map((c) => {
+    while (j < secondary.length && secondary[j].end <= c.start) j++
     let best = null
     let bestOv = 0
-    for (const s of secondary) {
+    for (let k = j; k < secondary.length && secondary[k].start < c.end; k++) {
+      const s = secondary[k]
       const ov = Math.min(c.end, s.end) - Math.max(c.start, s.start)
       if (ov > bestOv) {
         bestOv = ov

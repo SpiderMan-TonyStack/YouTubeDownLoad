@@ -131,6 +131,10 @@ function isSubtitleError(text) {
   return /Unable to download (?:video )?(?:subtitles|automatic captions)/i.test(text)
 }
 
+// 错误输出只保留尾部：长视频 + 大量 warning 时无上限累积会一直涨，
+// 而真正有用的错误信息都在最后几百字符里。
+const ERR_TAIL = 32 * 1024
+
 // -------- 运行中任务表（用于取消） --------
 const activeTasks = new Map()
 
@@ -198,7 +202,7 @@ function runYtDlpOnce({ args, ytdlpPath, onEvent, id }) {
     p.stdout.on('data', (d) => d.toString().split(/\r?\n/).forEach(handleLine))
     p.stderr.on('data', (d) => {
       const text = d.toString()
-      errOut += text
+      errOut = (errOut + text).slice(-ERR_TAIL)
       text.split(/\r?\n/).forEach(handleLine)
     })
 

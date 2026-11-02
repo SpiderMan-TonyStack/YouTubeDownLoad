@@ -71,39 +71,47 @@ function httpRequest({ url, method = 'GET', secret = '', body = null, timeout = 
 }
 
 // 找到一个可用的本地 HTTP 代理端口
+// 端口全部并发探测（各自 350ms 超时），再按优先级取第一个通的 —— 串行最坏要 4 秒
 async function findLocalProxyPort(preferred) {
   const list = preferred ? [preferred, ...HTTP_PROXY_PORTS] : HTTP_PROXY_PORTS
-  for (const port of list) {
-    if (await probeTcp(port)) return port
-  }
-  return null
+  const results = await Promise.all(list.map((port) => probeTcp(port)))
+  const i = results.indexOf(true)
+  return i >= 0 ? list[i] : null
 }
 
 // 探测 Clash 兼容内核的控制接口（external-controller）
 async function findController(secret, preferredPort) {
   const ports = preferredPort ? [preferredPort, ...CONTROLLER_PORTS] : CONTROLLER_PORTS
-  let unauthorized = null
-  for (const port of ports) {
-    if (!(await probeTcp(port))) continue
-    const url = `http://${HOST}:${port}`
-    const r = await httpRequest({ url: url + '/version', secret })
-    if (r.status === 200) {
-      let version = ''
-      try {
-        version = JSON.parse(r.body).version || ''
-      } catch (e) {}
-      return { url, port, version, secret }
-    }
-    if (r.status === 401 || r.status === 403) unauthorized = { url, port }
-  }
-  if (unauthorized) return { ...unauthorized, needsSecret: true }
+  // 同样并发探测；结果按端口优先级排序后再挑选
+  const results = await Promise.all(
+    ports.map(async (port) => {
+      if (!(await probeTcp(port))) return null
+      const url = `http://${HOST}:${port}`
+      const r = await httpRequest({ url: url + '/version', secret })
+      if (r.status === 200) {
+        let version = ''
+        try {
+          version = JSON.parse(r.body).version || ''
+        } catch (e) {}
+        return { url, port, version, secret }
+      }
+      if (r.status === 401 || r.status === 403) return { url, port, unauthorized: true }
+      return null
+    })
+  )
+  const ok = results.find((r) => r && !r.unauthorized)
+  if (ok) return ok
+  const un = results.find((r) => r && r.unauthorized)
+  if (un) return { url: un.url, port: un.port, needsSecret: true }
   return null
 }
 
-// 综合检测：本地代理端口 + 控制接口
+// 综合检测：本地代理端口 + 控制接口（两路并行，互不等待）
 async function detect({ secret = '', controllerPort = null, proxyPort = null } = {}) {
-  const port = await findLocalProxyPort(proxyPort)
-  const controller = await findController(secret, controllerPort)
+  const [port, controller] = await Promise.all([
+    findLocalProxyPort(proxyPort),
+    findController(secret, controllerPort)
+  ])
   return {
     proxyPort: port,
     proxyUrl: port ? `http://${HOST}:${port}` : '',

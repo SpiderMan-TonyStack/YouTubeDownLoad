@@ -109,7 +109,8 @@ function burnSubtitles({ ffmpegPath, videoPath, subs, outPath, duration, onEvent
     let stderr = ''
     p.stderr.on('data', (d) => {
       const s = d.toString()
-      stderr += s
+      // 只保留尾部：ffmpeg 日志会长到几 MB，而报错信息都在最后几百字符
+      stderr = (stderr + s).slice(-32 * 1024)
       if (duration) {
         const m = s.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
         if (m) {
