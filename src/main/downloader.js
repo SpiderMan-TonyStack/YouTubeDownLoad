@@ -77,6 +77,16 @@ function parseProgressLine(line) {
   }
 }
 
+// 字幕语言顺序很关键：**en（原生 ASR）放最前**。
+// YouTube 会对「自动翻译轨」(zh-Hans/zh-Hant) 做 IP 级限速（HTTP 429），
+// 但原生轨不受影响。把 en 排在前面，yt-dlp 会先成功写出 en.srt，
+// 之后即便中文轨 429 导致整条命令失败，en.srt 也已经落盘可以拿来用。
+function subtitleLangList(subtitle) {
+  if (subtitle === 'en') return 'en,en-*'
+  if (subtitle === 'zh') return 'en,zh-Hans,zh-CN,zh,zh-Hans-*'
+  return 'en,zh-Hans,zh-CN,zh'
+}
+
 // -------- 构建 yt-dlp 参数 --------
 function buildArgs({ url, options, template, proxy, ffmpegPath }) {
   const args = ['--newline', '--restrict-filenames', '--no-playlist', '-o', template + '.%(ext)s']
@@ -98,9 +108,7 @@ function buildArgs({ url, options, template, proxy, ffmpegPath }) {
     // 同时尝试官方字幕与自动生成字幕（自动字幕作为兜底，避免"只有自动字幕"的视频拿不到字幕），
     // 并统一转换成 srt，便于后续 ffmpeg 烧录。
     args.push('--write-subs', '--write-auto-subs', '--sub-format', 'srt', '--convert-subs', 'srt')
-    if (options.subtitle === 'zh') args.push('--sub-langs', 'zh-Hans,zh-CN,zh,zh-Hans-*')
-    else if (options.subtitle === 'en') args.push('--sub-langs', 'en,en-*')
-    else args.push('--sub-langs', 'zh-Hans,zh-CN,zh,en')
+    args.push('--sub-langs', subtitleLangList(options.subtitle))
   }
 
   args.push(url)
@@ -112,9 +120,7 @@ function buildSubtitleOnlyArgs({ url, options, template, proxy }) {
   const args = ['--newline', '--restrict-filenames', '--no-playlist', '--skip-download', '-o', template + '.%(ext)s']
   if (proxy) args.push('--proxy', proxy)
   args.push('--write-subs', '--write-auto-subs', '--sub-format', 'srt', '--convert-subs', 'srt')
-  if (options.subtitle === 'zh') args.push('--sub-langs', 'zh-Hans,zh-CN,zh,zh-Hans-*')
-  else if (options.subtitle === 'en') args.push('--sub-langs', 'en,en-*')
-  else args.push('--sub-langs', 'zh-Hans,zh-CN,zh,en')
+  args.push('--sub-langs', subtitleLangList(options.subtitle))
   args.push(url)
   return args
 }
@@ -208,12 +214,15 @@ async function finalizeVideo({ id, videoPath, subPaths, options, ffmpegPath, onE
   if (options.subtitle && options.subtitle !== 'none' && subPaths.length) {
     const zhSub = subPaths.find((s) => /zh/i.test(path.basename(s)))
     const enSub = subPaths.find((s) => /en/i.test(path.basename(s)) && !/zh/i.test(path.basename(s)))
+    // subs.zh = 主字幕槽（底部、大字号）；subs.en = 副字幕槽（顶部、小字号）。
+    // 槽位与文件语言无关：例如「仅英文」时英文也放主槽，避免字幕跑到画面顶部。
     const subs = {}
-    if (options.subtitle === 'zh' && zhSub) subs.zh = zhSub
-    else if (options.subtitle === 'en' && enSub) subs.en = enSub
-    else {
-      if (zhSub) subs.zh = zhSub
-      if (enSub) subs.en = enSub
+    const primary = zhSub || enSub
+    if (options.subtitle === 'en') {
+      if (primary) subs.zh = primary
+    } else {
+      if (primary) subs.zh = primary
+      if (options.subtitle === 'both' && zhSub && enSub) subs.en = enSub
     }
 
     if (Object.keys(subs).length) {
@@ -280,16 +289,24 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
   })
   if (wasCancelled(id)) return finishCancelled(id, onEvent)
 
-  // 若因字幕下载失败（典型 429），自动回退为无字幕下载，避免整单失败
+  // 若因字幕下载失败（典型 429 自动翻译轨），自动回退为「无字幕下载视频」，
+  // 但先检查字幕阶段是否已经落盘了可用文件（en 原生轨排在前面，通常会成功）。
   if ((first.code !== 0 || !first.videoPath || !fs.existsSync(first.videoPath)) && isSubtitleError(first.errOut)) {
     const is429 = /429/.test(first.errOut)
+    const partial = first.subPaths.filter((p) => fs.existsSync(p))
+    const wantsZh = options.subtitle === 'zh' || options.subtitle === 'both'
+    const gotZh = partial.some((p) => /zh/i.test(path.basename(p)))
+    const degraded = wantsZh && !gotZh && partial.length > 0
+
     onEvent({
       type: 'warn',
       id,
       retryable: true,
-      msg: is429
-        ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
-        : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
+      msg: degraded
+        ? '中文字幕被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可点「重试字幕」再试中文。'
+        : is429
+          ? '字幕被 YouTube 限速（HTTP 429），本次已回退为无字幕下载。可稍后点「重试字幕」补上（无需重下视频），或在设置中配置代理更换 IP。'
+          : '字幕下载失败，本次已回退为无字幕下载：' + (parseYtDlpError(first.errOut) || '未知错误')
     })
 
     const second = await runYtDlpOnce({
@@ -308,11 +325,13 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     if (!second.videoPath || !fs.existsSync(second.videoPath)) {
       return onEvent({ type: 'error', id, message: '未找到下载产出文件' })
     }
+
+    // 有可用字幕就烧上去（可能只是英文）；一个都没有则直接完成视频
     return finalizeVideo({
       id,
       videoPath: second.videoPath,
-      subPaths: [],
-      options: { ...options, subtitle: 'none' },
+      subPaths: partial,
+      options,
       ffmpegPath,
       onEvent
     })
@@ -330,6 +349,20 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
   }
 
   return finalizeVideo({ id, videoPath: first.videoPath, subPaths: first.subPaths, options, ffmpegPath, onEvent })
+}
+
+// 兜底：yt-dlp 若判定字幕「已下载」会跳过、不再输出 Writing 行，
+// 这时直接按文件名在目录里找一遍（<视频名>.<lang>.srt）
+function findSubtitleFiles(outDir, videoPath) {
+  const base = path.basename(videoPath, path.extname(videoPath))
+  try {
+    return fs
+      .readdirSync(outDir)
+      .filter((f) => f.startsWith(base + '.') && f.toLowerCase().endsWith('.srt'))
+      .map((f) => path.join(outDir, f))
+  } catch (e) {
+    return []
+  }
 }
 
 // -------- 补字幕：视频已下载完成，仅重新抓取字幕并烧录（不重下视频） --------
@@ -351,8 +384,28 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
   })
   if (wasCancelled(id)) return finishCancelled(id, onEvent)
 
+  // yt-dlp 输出的字幕路径 + 目录里已存在的同名字幕（后者覆盖「已下载被跳过」的情况）
+  let found = r.subPaths.filter((p) => fs.existsSync(p))
+  if (!found.length) found = findSubtitleFiles(outDir, videoPath)
+
   if (isSubtitleError(r.errOut)) {
     const is429 = /429/.test(r.errOut)
+    // en 原生轨排在最前，通常已经落盘；有就先用上，别白白丢掉
+    const wantsZh = options.subtitle === 'zh' || options.subtitle === 'both'
+    const gotZh = found.some((p) => /zh/i.test(path.basename(p)))
+
+    if (found.length) {
+      if (wantsZh && !gotZh) {
+        onEvent({
+          type: 'warn',
+          id,
+          retryable: true,
+          msg: '中文字幕仍被 YouTube 限速（HTTP 429），本次已改用英文原生字幕；稍后可再点「重试字幕」试中文。'
+        })
+      }
+      return finalizeVideo({ id, videoPath, subPaths: found, options, ffmpegPath, onEvent, retried: true })
+    }
+
     activeTasks.delete(id)
     return onEvent({
       type: 'warn',
@@ -363,12 +416,12 @@ async function retrySubtitles({ id, url, ytdlpPath, ffmpegPath, options, outDir,
         : '字幕抓取失败：' + (parseYtDlpError(r.errOut) || '未知错误')
     })
   }
-  if (!r.subPaths.length) {
+  if (!found.length) {
     activeTasks.delete(id)
     return onEvent({ type: 'warn', id, msg: '未取到字幕文件，该视频可能没有所选中语言的字幕' })
   }
 
-  return finalizeVideo({ id, videoPath, subPaths: r.subPaths, options, ffmpegPath, onEvent, retried: true })
+  return finalizeVideo({ id, videoPath, subPaths: found, options, ffmpegPath, onEvent, retried: true })
 }
 
 // -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
