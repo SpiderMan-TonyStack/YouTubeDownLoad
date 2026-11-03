@@ -40,10 +40,11 @@ function genId() {
 }
 
 // -------- 解析视频信息 --------
-function parseInfo(url, ytdlpPath, proxy) {
+function parseInfo(url, ytdlpPath, proxy, cookies) {
   return new Promise((resolve, reject) => {
     const args = ['--dump-json', '--no-warnings', '--no-playlist', '--skip-download']
     if (proxy) args.push('--proxy', proxy)
+    args.push(...cookieArgs(cookies))
     args.push(url)
     const p = spawn(ytdlpPath, args, { shell: false, windowsHide: true })
     let out = ''
@@ -125,11 +126,54 @@ function subtitleLangList(subtitle) {
 }
 
 // -------- 构建 yt-dlp 参数 --------
-function buildArgs({ url, options, template, proxy, ffmpegPath }) {
+// YouTube 的登录 Cookie 参数。cookies = { mode: 'none'|'file'|'browser', browser, file }
+// file 模式优先：cookies.txt 是绕开浏览器 DPAPI 加密的可靠路径。
+function cookieArgs(cookies) {
+  if (!cookies) return []
+  if (cookies.mode === 'file' && cookies.file && fs.existsSync(cookies.file)) {
+    return ['--cookies', cookies.file]
+  }
+  if (cookies.mode === 'browser' && cookies.browser) {
+    return ['--cookies-from-browser', cookies.browser]
+  }
+  return []
+}
+
+// YouTube 的机器人校验错误（需要带登录 Cookie 才能过）
+function isBotCheckError(text) {
+  return /Sign in to confirm|not a bot|confirm you.{0,4}re not a bot/i.test(String(text || ''))
+}
+
+// 把 yt-dlp 的英文报错换成用户能照着做的中文引导
+function friendlyYtdlpError(err) {
+  const msg = String((err && err.message) || err || '')
+  if (isBotCheckError(msg)) {
+    return (
+      'YouTube 要求验证"你不是机器人"，需要带上你的登录 Cookie 才能继续。\n' +
+      '请到「设置 → YouTube 登录状态」里配置：\n' +
+      '  · 推荐：用浏览器扩展导出 cookies.txt，然后把文件路径填进去；\n' +
+      '  · 或选择"从浏览器读取"（Chrome 127+ 的加密常导致失败，失败时改用 cookies.txt）。\n' +
+      '另外确认你已在浏览器里登录 YouTube，并且账号没有被限制。'
+    )
+  }
+  if (/Could not copy Chrome cookie database/i.test(msg)) {
+    return '读取 Chrome 的 Cookie 失败（数据库被浏览器占用）。请完全退出 Chrome 后重试，或改用 cookies.txt 文件。'
+  }
+  if (/Failed to decrypt with DPAPI/i.test(msg)) {
+    return (
+      'Chrome/Edge 127+ 对 Cookie 做了应用绑定加密，无法直接读取。\n' +
+      '请改用 cookies.txt：用浏览器扩展导出（Netscape 格式），再在设置里选择该文件。'
+    )
+  }
+  return msg
+}
+
+function buildArgs({ url, options, template, proxy, ffmpegPath, cookies }) {
   const args = ['--newline', '--restrict-filenames', '--no-playlist', '-o', template + '.%(ext)s']
   if (proxy) args.push('--proxy', proxy)
   // 明确告知 yt-dlp ffmpeg 位置，避免打包后因 PATH 中找不到 ffmpeg 导致合并/提取失败
   if (ffmpegPath) args.push('--ffmpeg-location', path.dirname(ffmpegPath))
+  args.push(...cookieArgs(cookies))
 
   if (options.mode === 'audio') {
     args.push('-f', 'bestaudio', '-x', '--audio-format', 'mp3')
@@ -153,9 +197,10 @@ function buildArgs({ url, options, template, proxy, ffmpegPath }) {
 }
 
 // 仅抓取字幕（视频已存在时用于「补字幕」），沿用与下载相同的命名参数，保证字幕文件与视频同名
-function buildSubtitleOnlyArgs({ url, options, template, proxy }) {
+function buildSubtitleOnlyArgs({ url, options, template, proxy, cookies }) {
   const args = ['--newline', '--restrict-filenames', '--no-playlist', '--skip-download', '-o', template + '.%(ext)s']
   if (proxy) args.push('--proxy', proxy)
+  args.push(...cookieArgs(cookies))
   args.push('--write-subs', '--write-auto-subs', '--sub-format', 'srt', '--convert-subs', 'srt')
   args.push('--sub-langs', subtitleLangList(options.subtitle))
   args.push(url)
@@ -402,12 +447,12 @@ async function finalizeVideo({
   })
 }
 
-async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }) {
+async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, cookies, onEvent }) {
   const template = path.join(outDir, '%(title)s [%(id)s]')
 
   // 第一次：按用户选择尝试下载（含字幕）
   const first = await runYtDlpOnce({
-    args: buildArgs({ url, options, template, proxy, ffmpegPath }),
+    args: buildArgs({ url, options, template, proxy, ffmpegPath, cookies }),
     ytdlpPath,
     onEvent,
     id
@@ -456,7 +501,7 @@ async function runDownloadLoop({ id, url, ytdlpPath, ffmpegPath, options, outDir
     }
 
     const second = await runYtDlpOnce({
-      args: buildArgs({ url, options: { ...options, subtitle: 'none' }, template, proxy, ffmpegPath }),
+      args: buildArgs({ url, options: { ...options, subtitle: 'none' }, template, proxy, ffmpegPath, cookies }),
       ytdlpPath,
       onEvent,
       id
@@ -540,6 +585,7 @@ async function retrySubtitles({
   proxy,
   videoPath,
   translate,
+  cookies,
   onEvent
 }) {
   if (!options.subtitle || options.subtitle === 'none') {
@@ -552,7 +598,7 @@ async function retrySubtitles({
   const template = path.join(outDir, '%(title)s [%(id)s]')
   onEvent({ type: 'status', id, msg: '正在重新抓取字幕…' })
   const r = await runYtDlpOnce({
-    args: buildSubtitleOnlyArgs({ url, options, template, proxy }),
+    args: buildSubtitleOnlyArgs({ url, options, template, proxy, cookies }),
     ytdlpPath,
     onEvent,
     id
@@ -623,10 +669,10 @@ async function retrySubtitles({
 }
 
 // -------- 启动一次下载（含字幕烧录编排，字幕失败时自动回退） --------
-function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }) {
+function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, cookies, onEvent }) {
   const taskId = id || genId()
   // 后台执行，立即返回 id，避免 IPC 阻塞
-  runDownloadLoop({ id: taskId, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, onEvent }).catch(
+  runDownloadLoop({ id: taskId, url, ytdlpPath, ffmpegPath, options, outDir, proxy, translate, cookies, onEvent }).catch(
     (e) => {
       onEvent({ type: 'error', id: taskId, message: '下载异常：' + e.message })
     }
@@ -636,6 +682,9 @@ function startDownload({ id, url, ytdlpPath, ffmpegPath, options, outDir, proxy,
 
 module.exports = {
   parseInfo,
+  cookieArgs,
+  friendlyYtdlpError,
+  isBotCheckError,
   startDownload,
   retrySubtitles,
   cancel,

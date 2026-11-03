@@ -2,7 +2,13 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { ensureBinaries, updateYtDlp } = require('./binaries')
-const { parseInfo, startDownload, retrySubtitles, cancel } = require('./downloader')
+const {
+  parseInfo,
+  startDownload,
+  retrySubtitles,
+  cancel,
+  friendlyYtdlpError
+} = require('./downloader')
 const proxy = require('./proxy')
 const { testTranslate } = require('./translator')
 const {
@@ -124,11 +130,24 @@ ipcMain.handle('app:update-ytdlp', async () => {
   return p
 })
 
+// YouTube 登录 Cookie 配置：风控要求 "Sign in to confirm you're not a bot" 时必须带上
+function cookieConfig(settings) {
+  return {
+    mode: settings.cookiesMode || 'none',
+    browser: settings.cookiesBrowser || 'chrome',
+    file: settings.cookiesFile || ''
+  }
+}
+
 ipcMain.handle('parse', async (_e, { url }) => {
   if (!url || !/^https?:\/\//i.test(url)) throw new Error('请输入有效的视频链接')
   const settings = getSettings()
   const bins = await ensureBinaries(settings, (msg) => send('binaries-status', msg))
-  return parseInfo(url, bins.ytDlp, activeProxy(settings))
+  try {
+    return await parseInfo(url, bins.ytDlp, activeProxy(settings), cookieConfig(settings))
+  } catch (e) {
+    throw new Error(friendlyYtdlpError(e))
+  }
 })
 
 ipcMain.handle('download', async (_e, { url, options }) => {
@@ -145,6 +164,7 @@ ipcMain.handle('download', async (_e, { url, options }) => {
     outDir: dir,
     proxy: activeProxy(settings),
     translate: translateConfig(settings),
+    cookies: cookieConfig(settings),
     onEvent: (ev) => {
       ev.title = options.title
       send('download-event', ev)
@@ -201,6 +221,7 @@ ipcMain.handle('retry-subtitle', async (_e, { id, url, options, filePath }) => {
     proxy: activeProxy(settings),
     videoPath: safePath,
     translate: translateConfig(settings),
+    cookies: cookieConfig(settings),
     onEvent: (ev) => {
       ev.title = options.title
       send('download-event', ev)
@@ -314,6 +335,27 @@ ipcMain.handle('select-binary', async (_e, type) => {
   })
   if (result.canceled || !result.filePaths.length) return null
   return result.filePaths[0]
+})
+
+// 选择 cookies.txt（Netscape 格式）
+ipcMain.handle('select-cookies-file', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择 cookies.txt（Netscape 格式）',
+    filters: [
+      { name: 'Cookie 文件', extensions: ['txt'] },
+      { name: '所有文件', extensions: ['*'] }
+    ],
+    properties: ['openFile']
+  })
+  if (result.canceled || !result.filePaths.length) return null
+  const p = result.filePaths[0]
+  // 粗校验：Netscape 格式前几行里会有 "# Netscape HTTP Cookie File"
+  let looksValid = false
+  try {
+    const head = fs.readFileSync(p, 'utf8').slice(0, 512)
+    looksValid = /Netscape HTTP Cookie File/i.test(head) || /\.youtube\.com/.test(head)
+  } catch (e) {}
+  return { path: p, looksValid }
 })
 
 ipcMain.handle('select-dir', async () => {

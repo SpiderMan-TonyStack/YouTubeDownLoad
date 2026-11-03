@@ -17,6 +17,9 @@ const settings = ref({
   hasTranslateApiKey: false,
   translateModel: 'deepseek-chat',
   binaryMirrorEnabled: false,
+  cookiesMode: 'none',
+  cookiesBrowser: 'chrome',
+  cookiesFile: '',
   theme: 'light'
 })
 
@@ -213,6 +216,32 @@ async function saveBinaryMirror() {
   applyMasked(r)
 }
 
+// ---- YouTube 登录状态（Cookies）----
+const cookiesMsg = ref('')
+const cookiesOk = ref(true)
+
+async function saveCookies() {
+  const r = await window.api.saveSettings({
+    cookiesMode: settings.value.cookiesMode || 'none',
+    cookiesBrowser: settings.value.cookiesBrowser || 'chrome',
+    cookiesFile: settings.value.cookiesFile || ''
+  })
+  applyMasked(r)
+  cookiesMsg.value = ''
+}
+
+async function pickCookiesFile() {
+  const res = await window.api.selectCookiesFile()
+  if (!res) return
+  settings.value.cookiesFile = res.path
+  settings.value.cookiesMode = 'file'
+  await saveCookies()
+  cookiesOk.value = !!res.looksValid
+  cookiesMsg.value = res.looksValid
+    ? '已选择：' + res.path
+    : '文件已选择，但格式看起来不像 Netscape cookies.txt，请确认导出的是"cookies.txt"而不是 JSON。'
+}
+
 async function testTranslate() {
   trTesting.value = true
   trMsg.value = ''
@@ -378,6 +407,61 @@ secret: "自定一个密钥"</pre>
     <div class="field">
       <div class="muted note" style="margin-top: 0">
         字幕：下载视频时会同时尝试**官方字幕**与**自动生成字幕**（后者作为兜底），并烧录进画面；无需额外开关。
+      </div>
+    </div>
+
+    <h3>YouTube 登录状态（Cookies）</h3>
+    <div class="field">
+      <div class="muted note" style="margin-top: 0">
+        YouTube 风控会要求验证"你不是机器人"（报错 <code>Sign in to confirm you're not a bot</code>），
+        这时必须带上你已登录账号的 Cookie 才能解析与下载。不配也能用，只是遇到风控时会失败。
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Cookie 来源</div>
+      <div class="row">
+        <select v-model="settings.cookiesMode" class="grow" @change="saveCookies">
+          <option value="none">不使用</option>
+          <option value="file">使用 cookies.txt 文件（推荐）</option>
+          <option value="browser">从浏览器读取</option>
+        </select>
+      </div>
+    </div>
+
+    <div v-if="settings.cookiesMode === 'file'" class="field">
+      <div class="label">cookies.txt 路径</div>
+      <div class="row">
+        <input v-model="settings.cookiesFile" class="grow" placeholder="Netscape 格式的 cookies.txt" @change="saveCookies" />
+        <button class="ghost" @click="pickCookiesFile">选择文件…</button>
+      </div>
+      <div v-if="cookiesMsg" class="note" :class="cookiesOk ? 'good' : 'bad'" style="margin-top: 6px">
+        {{ cookiesMsg }}
+      </div>
+      <div class="muted note" style="margin-top: 6px">
+        推荐路径：浏览器安装「Get cookies.txt LOCALLY」这类扩展 → 在已登录 YouTube 的标签页导出 →
+        选择导出的 <code>cookies.txt</code>。文件只保存在你本机，应用只把它交给 yt-dlp 读取。
+      </div>
+    </div>
+
+    <div v-if="settings.cookiesMode === 'browser'" class="field">
+      <div class="label">浏览器</div>
+      <div class="row">
+        <select v-model="settings.cookiesBrowser" class="grow" @change="saveCookies">
+          <option value="chrome">Chrome</option>
+          <option value="edge">Edge</option>
+          <option value="firefox">Firefox</option>
+          <option value="brave">Brave</option>
+          <option value="chromium">Chromium</option>
+          <option value="opera">Opera</option>
+          <option value="vivaldi">Vivaldi</option>
+        </select>
+      </div>
+      <div class="muted note" style="margin-top: 6px">
+        <b>注意</b>：Chrome / Edge 从 127 版起对 Cookie 做了应用绑定加密，直接读取通常会失败
+        （报 <code>Failed to decrypt with DPAPI</code> 或 <code>Could not copy Chrome cookie database</code>）。
+        遇到这种情况请改用上面的 cookies.txt；Firefox 的读取一般没问题。
+        另外 Chrome 正在运行时会锁住数据库，需要先完全退出。
       </div>
     </div>
 

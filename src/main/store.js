@@ -27,6 +27,14 @@ const store = new Store({
       translateModel: 'deepseek-chat',
       // 引擎下载是否允许走第三方加速镜像（默认关闭：镜像无法保证未被篡改）
       binaryMirrorEnabled: false,
+      // YouTube 登录状态：YouTube 风控会要求 "Sign in to confirm you're not a bot"，
+      // 这时必须带上登录 Cookie 才能解析/下载。
+      //   none    不带（默认）
+      //   file    使用导出的 cookies.txt（Netscape 格式，最可靠）
+      //   browser 从浏览器读取（Chrome 127+ 的 DPAPI 应用绑定加密常导致失败）
+      cookiesMode: 'none',
+      cookiesBrowser: 'chrome',
+      cookiesFile: '',
       theme: 'light'
     }
   }

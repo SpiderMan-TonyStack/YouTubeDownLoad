@@ -35,5 +35,6 @@ contextBridge.exposeInMainWorld('api', {
 
   selectBinary: (type) => ipcRenderer.invoke('select-binary', type),
   selectDir: () => ipcRenderer.invoke('select-dir'),
+  selectCookiesFile: () => ipcRenderer.invoke('select-cookies-file'),
   openFolder: (filePath) => ipcRenderer.invoke('open-folder', filePath)
 })

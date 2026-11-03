@@ -101,6 +101,31 @@ npm run dist:portable   # 只构建便携版
 
 > 因此若你的网络既连不上官方源、又没开镜像，引擎下载会明确报错而不是装上一个来路不明的文件。此时可手动「选择」本地已有的 exe，或使用安装包自带的引擎。
 
+## YouTube 登录状态（Cookies）
+
+YouTube 的风控会随机要求验证「你不是机器人」，此时不带登录 Cookie 会直接报错、连解析都过不去：
+
+```
+ERROR: [youtube] xxx: Sign in to confirm you're not a bot.
+```
+
+应用为此提供了三种 Cookie 来源（设置 → YouTube 登录状态），**解析、下载、补字幕三条链路都会带上**：
+
+| 模式 | 说明 |
+|---|---|
+| 不使用（默认） | 不带 Cookie。没遇到风控时完全够用。 |
+| **cookies.txt 文件（推荐）** | 用浏览器扩展（如「Get cookies.txt LOCALLY」）在已登录 YouTube 的标签页导出，再选该文件。**最可靠**。 |
+| 从浏览器读取 | 让 yt-dlp 直接读浏览器的 Cookie 库。选好浏览器即可，省去导出步骤。 |
+
+**为什么默认推荐 cookies.txt**：Chrome / Edge 从 127 版起对 Cookie 做了**应用绑定加密**，直接读取通常失败：
+
+- `Failed to decrypt with DPAPI`（解密不了）
+- `Could not copy Chrome cookie database`（Chrome 正在运行时锁住数据库，需先完全退出）
+
+Firefox 的读取一般正常。遇到上面两种报错，改用 cookies.txt 即可。
+
+> Cookie 等同于你的登录凭据，请勿分享 cookies.txt。应用只会把它作为参数交给 yt-dlp 读取，不会上传或转发到别处。
+
 ## 密钥与隐私
 
 - AI 翻译的 API Key、代理控制接口的 Secret 都**不再明文落盘**：用 Electron `safeStorage`（Windows 下为 DPAPI，绑定当前登录用户）加密后存入配置；
@@ -168,6 +193,7 @@ YouTube 对**自动翻译轨**（把英文 ASR 翻成中文的那条）做 IP �
 - **解析失败/超时**：YouTube 链接需可访问；请在「设置 → 网络代理」勾选启用代理并点「自动检测」+「测试连通性」。
 - **勾了启用代理仍连不上**：先点「测试连通性」看该端口能否出网。若失败，说明本机客户端未运行、端口不对或节点不可用；请在客户端里换一个节点再测。
 - **应用内看不到节点列表**：说明没检测到控制接口。节点在客户端界面里选即可（不影响使用）；想在应用内切换，见「网络代理 → 在应用内切换节点」。
+- **解析就报 `Sign in to confirm you're not a bot`**：YouTube 风控要求验证登录状态。到「设置 → YouTube 登录状态」配置 Cookie：优先用浏览器扩展导出 `cookies.txt` 再选该文件；选择"从浏览器读取"时若报 `Failed to decrypt with DPAPI`，说明是 Chrome/Edge 127+ 的应用绑定加密，请改用 cookies.txt。
 - **中文字幕拿不到（提示 HTTP 429）**：YouTube 对**自动翻译轨**（把英文 ASR 翻译成中文）做 IP 级限速，**原生英文字幕轨不受影响**。v3.0.0 起会自动用英文字幕**本地翻译成中文**并烧录，无需你再操作；若不想用翻译，可在「设置 → 字幕翻译」里取消勾选，届时会退回使用英文原生字幕。
 - **翻译失败（提示翻译失败/超时）**：免费翻译需要访问 Google。请在「设置 → 网络代理」勾选启用代理并点「测试连通性」，再回「字幕翻译」点「测试翻译」确认。用 AI 翻译则检查 Base URL / 密钥 / 模型名是否填写正确。
 - **翻译结果不满意**：免费引擎是机翻水平。可切到「AI 翻译」（OpenAI 兼容接口，如 DeepSeek），质量明显更好；切换后删掉视频目录里的 `*.zh-translated.srt` 缓存文件即可重翻。
@@ -175,6 +201,15 @@ YouTube 对**自动翻译轨**（把英文 ASR 翻成中文的那条）做 IP �
 - **烧上去的字幕重复/叠在一起、中文顺序是反的**：YouTube 自动字幕自带「滚动时间轴」，相邻两条时间上互相重叠。v2.0.4 起烧录前会自动裁剪重叠，重新下载即可；已存在的旧成品视频需重新下载才能重建。
 
 ## 更新日志
+
+### v4.0.0（2026-11-03）
+- **新增「YouTube 登录状态（Cookies）」** —— 解决 YouTube 风控导致的**无法解析/无法下载**：
+  - 报错表现为 `Sign in to confirm you're not a bot`，此时不带登录 Cookie 连解析都过不去；
+  - 支持三种来源：不使用 / **cookies.txt 文件（推荐）** / 从浏览器读取（Chrome·Edge·Firefox·Brave·Chromium·Opera·Vivaldi）；
+  - **解析、下载、重新抓字幕三条链路全部带上**，不是只管某一步；
+  - 选择文件时会做一次 Netscape 格式粗校验，选到 JSON 或别的文件会立刻提示；
+  - 报错**翻译成可操作的中文引导**：风控、DPAPI 解密失败、Chrome 数据库占用三种情况分别给出对应做法，不再是原样抛一段英文。
+- 为什么必须有 cookies.txt 这条路：实测 Chrome / Edge 127+ 的应用绑定加密会让 `--cookies-from-browser` 直接失败（`Failed to decrypt with DPAPI`），Chrome 运行时还有 `Could not copy Chrome cookie database`。只做浏览器读取的话，这台机器上根本用不了。
 
 ### v3.0.5（2026-11-02）
 - **修复子进程输出按 chunk 切行的隐患**（代码审查里最后一条正确性问题）：yt-dlp 的输出是一段段 chunk 来的，边界正好落在一行中间时会被切成两条半行，导致 `Destination:` / `Merging formats into` / `Writing subtitles to` 捕获到**截断的文件路径** → 任务报"未找到下载产出文件"；边界落在多字节字符中间时，中文会变成 `�`，表现为**视频标题乱码**（`JSON.parse` 并不会报错，属静默损坏）。
